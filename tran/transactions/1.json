@@ -1,0 +1,964 @@
+{
+  "results": [
+    {
+      "id": "VHJhbnNhY3Rpb246YTlmNTljZDktZTY4MC00ZGQ4LWFlYjAtODk4NGZkZjc2MDk3",
+      "uuid": "txr_l7qppmf6g16thblgh62frtr0is",
+      "childTransactionIds": [],
+      "childTransactionUuids": [],
+      "isLocked": false,
+      "isReconciled": false,
+      "transactionType": "AUTHORIZATION",
+      "userId": "VXNlcjoxNTAxNDEx",
+      "userUuid": "usr_n9gvasub810h18n4rmcmgkm6oo",
+      "userName": "Kevin Felix",
+      "rawMerchantName": "MICHAEL UDELL SNAP ON",
+      "merchantName": "Michael Udell Snap",
+      "budgetId": "QnVkZ2V0OjQ5MzgwMw==",
+      "budgetUuid": "bgt_binniul3m53kl3bu1snl0221do",
+      "budgetName": "CZV Manufacturing Ops",
+      "currencyData": {
+        "exchangeRate": 1,
+        "exponent": 2,
+        "originalCurrencyAmount": "4637",
+        "originalCurrencyCode": "USD",
+        "symbol": "$"
+      },
+      "receiptRequired": true,
+      "reviewRequired": true,
+      "occurredTime": "2026-01-05T21:07:59.000+00:00",
+      "updatedTime": "2026-01-05T21:17:27.000+00:00",
+      "complete": true,
+      "tags": [
+        {
+          "isRequired": true,
+          "selectedTagValues": [
+            "Tooling, Equipment & Small Tools <$2.5k |61010"
+          ],
+          "tagType": { "name": "1. Category" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": ["26-Manufacturing Enginering - CZV"],
+          "tagType": { "name": "2. Department" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "3. Justification and Notes" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": ["No"],
+          "tagType": { "name": "4. PO in Oracle (Y/N)?" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "5. PO #" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "9. Invoice #" }
+        }
+      ],
+      "customFields": [
+        {
+          "id": "VGFnVHlwZToyMjE2OTg=",
+          "uuid": "tty_dg4f45iea57s786566ikmcu3dk",
+          "name": "1. Category",
+          "isRequired": true,
+          "selectedValues": [
+            {
+              "id": "VGFnVmFsdWU6MzEwMDcwNjY=",
+              "uuid": "tvl_0jtahks6e91i92fuc85b661ji0",
+              "value": "Tooling, Equipment & Small Tools <$2.5k |61010"
+            }
+          ]
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTI=",
+          "uuid": "tty_lbctvm31vd4ppd88q283mof41k",
+          "name": "2. Department",
+          "isRequired": true,
+          "selectedValues": [
+            {
+              "id": "VGFnVmFsdWU6MjM0ODUzODI=",
+              "uuid": "tvl_kb921kplb17un8betntgohh6lo",
+              "value": "26-Manufacturing Enginering - CZV"
+            }
+          ]
+        },
+        {
+          "id": "VGFnVHlwZToyMjE2OTk=",
+          "uuid": "tty_ad5kmj9e156ov5nvoks2dveomo",
+          "name": "3. Justification and Notes",
+          "note": "Tooling needed for the main line",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTM=",
+          "uuid": "tty_cs1g6o1re55qjfhtk84r3vchc0",
+          "name": "4. PO in Oracle (Y/N)?",
+          "isRequired": true,
+          "selectedValues": [
+            {
+              "id": "VGFnVmFsdWU6OTI5MDAyMA==",
+              "uuid": "tvl_9i4uvtoeut5flaa5o11c285q2s",
+              "value": "No"
+            }
+          ]
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTQ=",
+          "uuid": "tty_6k0me2dgt93jd8oqbomiqqib44",
+          "name": "5. PO #",
+          "isRequired": false,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZTozMDE5Mzk=",
+          "uuid": "tty_e1cv35rji922n1knrksodb5ne4",
+          "name": "9. Invoice #",
+          "isRequired": false,
+          "selectedValues": []
+        }
+      ],
+      "network": "VISA",
+      "isParent": false,
+      "reviews": [],
+      "amount": 46.37,
+      "transactedAmount": 46.37,
+      "fees": 0,
+      "receiptStatus": "ATTACHED",
+      "reviewers": [
+        { "approverType": "BUDGET_OWNER", "status": "WAITING" },
+        { "approverType": "BOOKKEEPER", "status": "WAITING" }
+      ],
+      "cardId": "Q2FyZDoxMTQyMDMzNA==",
+      "cardUuid": "crd_ebl2fm8ord23f7fl9c8ksa02es",
+      "cardLastFour": "1066",
+      "cardType": "PHYSICAL",
+      "receiptSyncStatus": "NO_ATTACHMENTS",
+      "merchantCategoryCode": "5072",
+      "cardPresent": true,
+      "merchantLocation": {
+        "city": "LA MIRADA",
+        "state": "CA",
+        "postalCode": "90638",
+        "country": "US"
+      },
+      "clearingReference": "0002356005760790197"
+    },
+    {
+      "id": "VHJhbnNhY3Rpb246ZjJmODhiMDUtM2I5Ni00Nzc0LWJkYzMtZTc5OWEyNmM2NzRm",
+      "uuid": "txr_ubs8m19rip3n9fe3sucq4r379s",
+      "childTransactionIds": [],
+      "childTransactionUuids": [],
+      "isLocked": false,
+      "isReconciled": false,
+      "transactionType": "AUTHORIZATION",
+      "userId": "VXNlcjoxMDU0MzQx",
+      "userUuid": "usr_0m2roj0ql12t56dobg73vkmt34",
+      "userName": "Jeremy White",
+      "rawMerchantName": "ATHENS SERVICES",
+      "merchantName": "Athens Services",
+      "budgetId": "QnVkZ2V0OjQ5NzI2Mg==",
+      "budgetUuid": "bgt_8mo613ggap18h68vnrc8hgn5lk",
+      "budgetName": "CZV Facility Budget",
+      "currencyData": {
+        "exchangeRate": 1,
+        "exponent": 2,
+        "originalCurrencyAmount": "149722",
+        "originalCurrencyCode": "USD",
+        "symbol": "$"
+      },
+      "receiptRequired": true,
+      "reviewRequired": true,
+      "occurredTime": "2026-01-05T20:35:15.000+00:00",
+      "updatedTime": "2026-01-05T20:35:17.000+00:00",
+      "complete": false,
+      "tags": [
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "1. Category" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": ["57-Facilities"],
+          "tagType": { "name": "2. Department" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "3. Justification and Notes" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "4. PO in Oracle (Y/N)?" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "5. PO #" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "9. Invoice #" }
+        }
+      ],
+      "customFields": [
+        {
+          "id": "VGFnVHlwZToyMjE2OTg=",
+          "uuid": "tty_dg4f45iea57s786566ikmcu3dk",
+          "name": "1. Category",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTI=",
+          "uuid": "tty_lbctvm31vd4ppd88q283mof41k",
+          "name": "2. Department",
+          "isRequired": true,
+          "selectedValues": [
+            {
+              "id": "VGFnVmFsdWU6MjM0ODUzOTU=",
+              "uuid": "tvl_23aq6rt5i57mf4sgbevceur2nk",
+              "value": "57-Facilities"
+            }
+          ]
+        },
+        {
+          "id": "VGFnVHlwZToyMjE2OTk=",
+          "uuid": "tty_ad5kmj9e156ov5nvoks2dveomo",
+          "name": "3. Justification and Notes",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTM=",
+          "uuid": "tty_cs1g6o1re55qjfhtk84r3vchc0",
+          "name": "4. PO in Oracle (Y/N)?",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTQ=",
+          "uuid": "tty_6k0me2dgt93jd8oqbomiqqib44",
+          "name": "5. PO #",
+          "isRequired": false,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZTozMDE5Mzk=",
+          "uuid": "tty_e1cv35rji922n1knrksodb5ne4",
+          "name": "9. Invoice #",
+          "isRequired": false,
+          "selectedValues": []
+        }
+      ],
+      "network": "VISA",
+      "isParent": false,
+      "reviews": [],
+      "amount": 1497.22,
+      "transactedAmount": 1497.22,
+      "fees": 0,
+      "receiptStatus": "NOT_ATTACHED",
+      "reviewers": [
+        { "approverType": "BUDGET_OWNER", "status": "WAITING" },
+        { "approverType": "BOOKKEEPER", "status": "WAITING" }
+      ],
+      "cardId": "Q2FyZDo5NTU1NzIw",
+      "cardUuid": "crd_6edlg6a8ih5a952si5jo7nnvkk",
+      "cardLastFour": "3494",
+      "cardType": "PHYSICAL",
+      "receiptSyncStatus": "NO_ATTACHMENTS",
+      "merchantCategoryCode": "4900",
+      "cardPresent": false,
+      "clearingReference": "0002586005741156165"
+    },
+    {
+      "id": "VHJhbnNhY3Rpb246ZDdkZjc4ZjYtOTJhMC00NzI2LTk1OGMtZDk2NjEyZGZmNGNi",
+      "uuid": "txr_qvfnhtkik13id5ccr5j15nvkpc",
+      "childTransactionIds": [],
+      "childTransactionUuids": [],
+      "isLocked": false,
+      "isReconciled": false,
+      "transactionType": "AUTHORIZATION",
+      "userId": "VXNlcjoxMDY3ODk2",
+      "userUuid": "usr_ccgn7m82o93ivbueom1ch998tc",
+      "userName": "Dan Gielas",
+      "rawMerchantName": "SUMMIT RACING MAIL ORDER",
+      "merchantName": "Summit Racing",
+      "budgetId": "QnVkZ2V0OjQ5ODkwMg==",
+      "budgetUuid": "bgt_89594g343h6dd2d57mqgnt6kig",
+      "budgetName": "CZV Powertain Budget",
+      "currencyData": {
+        "exchangeRate": 1,
+        "exponent": 2,
+        "originalCurrencyAmount": "7461",
+        "originalCurrencyCode": "USD",
+        "symbol": "$"
+      },
+      "receiptRequired": true,
+      "reviewRequired": true,
+      "occurredTime": "2026-01-05T20:00:36.000+00:00",
+      "updatedTime": "2026-01-05T20:00:38.000+00:00",
+      "complete": false,
+      "tags": [
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "1. Category" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": ["14-Powertrain Engineering - CZV"],
+          "tagType": { "name": "2. Department" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "3. Justification and Notes" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "4. PO in Oracle (Y/N)?" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "5. PO #" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "9. Invoice #" }
+        }
+      ],
+      "customFields": [
+        {
+          "id": "VGFnVHlwZToyMjE2OTg=",
+          "uuid": "tty_dg4f45iea57s786566ikmcu3dk",
+          "name": "1. Category",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTI=",
+          "uuid": "tty_lbctvm31vd4ppd88q283mof41k",
+          "name": "2. Department",
+          "isRequired": true,
+          "selectedValues": [
+            {
+              "id": "VGFnVmFsdWU6MjM0ODUzODQ=",
+              "uuid": "tvl_5or30tebel23d44q310juc7ajc",
+              "value": "14-Powertrain Engineering - CZV"
+            }
+          ]
+        },
+        {
+          "id": "VGFnVHlwZToyMjE2OTk=",
+          "uuid": "tty_ad5kmj9e156ov5nvoks2dveomo",
+          "name": "3. Justification and Notes",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTM=",
+          "uuid": "tty_cs1g6o1re55qjfhtk84r3vchc0",
+          "name": "4. PO in Oracle (Y/N)?",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTQ=",
+          "uuid": "tty_6k0me2dgt93jd8oqbomiqqib44",
+          "name": "5. PO #",
+          "isRequired": false,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZTozMDE5Mzk=",
+          "uuid": "tty_e1cv35rji922n1knrksodb5ne4",
+          "name": "9. Invoice #",
+          "isRequired": false,
+          "selectedValues": []
+        }
+      ],
+      "network": "VISA",
+      "isParent": false,
+      "reviews": [],
+      "amount": 74.61,
+      "transactedAmount": 74.61,
+      "fees": 0,
+      "receiptStatus": "NOT_ATTACHED",
+      "reviewers": [
+        { "approverType": "BUDGET_OWNER", "status": "WAITING" },
+        { "approverType": "BOOKKEEPER", "status": "WAITING" }
+      ],
+      "cardId": "Q2FyZDo5NTcyODkw",
+      "cardUuid": "crd_js1hmav3g55i36npj9ikeu0lpg",
+      "cardLastFour": "5919",
+      "cardType": "VIRTUAL_MEMBER",
+      "receiptSyncStatus": "NO_ATTACHMENTS",
+      "merchantCategoryCode": "5965",
+      "cardPresent": false,
+      "clearingReference": "0002356005720366466"
+    },
+    {
+      "id": "VHJhbnNhY3Rpb246ZmNjZTIzYWItNTUxMi00MDljLTk2MjItNDE5YWQ5ZWJmMzRj",
+      "uuid": "txr_vj727aql2909p5h286ddjqvj9g",
+      "childTransactionIds": [],
+      "childTransactionUuids": [],
+      "isLocked": false,
+      "isReconciled": false,
+      "transactionType": "AUTHORIZATION",
+      "userId": "VXNlcjoyMTQ0MjE5",
+      "userUuid": "usr_sqfjugkr5d22p66k640lro7j94",
+      "userName": "Carlito Cupeles",
+      "rawMerchantName": "AMAZON MKTPLACE PMTS",
+      "merchantName": "Amazon",
+      "budgetId": "QnVkZ2V0OjU5NjE4OQ==",
+      "budgetUuid": "bgt_bf36bjhc1l70j23cnnpq3sflf0",
+      "budgetName": "Validation Team Budget",
+      "currencyData": {
+        "exchangeRate": 1,
+        "exponent": 2,
+        "originalCurrencyAmount": "4860",
+        "originalCurrencyCode": "USD",
+        "symbol": "$"
+      },
+      "receiptRequired": true,
+      "reviewRequired": true,
+      "occurredTime": "2026-01-05T19:45:42.000+00:00",
+      "updatedTime": "2026-01-05T19:45:46.000+00:00",
+      "complete": false,
+      "tags": [
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "1. Category" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "2. Department" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "3. Justification and Notes" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "4. PO in Oracle (Y/N)?" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "5. PO #" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "9. Invoice #" }
+        }
+      ],
+      "customFields": [
+        {
+          "id": "VGFnVHlwZToyMjE2OTg=",
+          "uuid": "tty_dg4f45iea57s786566ikmcu3dk",
+          "name": "1. Category",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTI=",
+          "uuid": "tty_lbctvm31vd4ppd88q283mof41k",
+          "name": "2. Department",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjE2OTk=",
+          "uuid": "tty_ad5kmj9e156ov5nvoks2dveomo",
+          "name": "3. Justification and Notes",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTM=",
+          "uuid": "tty_cs1g6o1re55qjfhtk84r3vchc0",
+          "name": "4. PO in Oracle (Y/N)?",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTQ=",
+          "uuid": "tty_6k0me2dgt93jd8oqbomiqqib44",
+          "name": "5. PO #",
+          "isRequired": false,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZTozMDE5Mzk=",
+          "uuid": "tty_e1cv35rji922n1knrksodb5ne4",
+          "name": "9. Invoice #",
+          "isRequired": false,
+          "selectedValues": []
+        }
+      ],
+      "network": "VISA",
+      "isParent": false,
+      "reviews": [],
+      "amount": 48.6,
+      "transactedAmount": 48.6,
+      "fees": 0,
+      "receiptStatus": "NOT_ATTACHED",
+      "reviewers": [
+        { "approverType": "BUDGET_OWNER", "status": "WAITING" },
+        { "approverType": "BOOKKEEPER", "status": "WAITING" }
+      ],
+      "cardId": "Q2FyZDoxNDUxNzk2Mg==",
+      "cardUuid": "crd_a9fi5kq9st0k5assop6m5j4p14",
+      "cardLastFour": "7811",
+      "cardType": "PHYSICAL",
+      "receiptSyncStatus": "NO_ATTACHMENTS",
+      "merchantCategoryCode": "5942",
+      "cardPresent": false,
+      "clearingReference": "0002346005711422755"
+    },
+    {
+      "id": "VHJhbnNhY3Rpb246MjY0ZjIyNzQtYmQyZi00MTZkLTllNTMtOTU0Zjg4MmFjYzgz",
+      "uuid": "txr_4p7i4t5t5t0mr7ijil7ogamcgc",
+      "childTransactionIds": [],
+      "childTransactionUuids": [],
+      "isLocked": false,
+      "isReconciled": false,
+      "transactionType": "AUTHORIZATION",
+      "userId": "VXNlcjoyMzE0MzA1",
+      "userUuid": "usr_n9aorduvbh5jb3fm6s9875u194",
+      "userName": "Jisu Youm",
+      "rawMerchantName": "SP ECUMASTER USA",
+      "merchantName": "Ecumaster",
+      "budgetId": "QnVkZ2V0OjQ0NzIzNQ==",
+      "budgetUuid": "bgt_qt2kb6n8ip5d7600lunr739njg",
+      "budgetName": "CZV Procurement Budget",
+      "currencyData": {
+        "exchangeRate": 1,
+        "exponent": 2,
+        "originalCurrencyAmount": "16181",
+        "originalCurrencyCode": "USD",
+        "symbol": "$"
+      },
+      "receiptRequired": true,
+      "reviewRequired": true,
+      "occurredTime": "2026-01-05T19:31:59.000+00:00",
+      "updatedTime": "2026-01-05T19:32:02.000+00:00",
+      "complete": false,
+      "tags": [
+        {
+          "isRequired": true,
+          "selectedTagValues": [
+            "Tooling, Equipment & Small Tools <$2.5k |61010"
+          ],
+          "tagType": { "name": "1. Category" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": ["66-Electrical Engineering"],
+          "tagType": { "name": "2. Department" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "3. Justification and Notes" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": ["Yes"],
+          "tagType": { "name": "4. PO in Oracle (Y/N)?" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "5. PO #" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "9. Invoice #" }
+        }
+      ],
+      "customFields": [
+        {
+          "id": "VGFnVHlwZToyMjE2OTg=",
+          "uuid": "tty_dg4f45iea57s786566ikmcu3dk",
+          "name": "1. Category",
+          "isRequired": true,
+          "selectedValues": [
+            {
+              "id": "VGFnVmFsdWU6MzEwMDcwNjY=",
+              "uuid": "tvl_0jtahks6e91i92fuc85b661ji0",
+              "value": "Tooling, Equipment & Small Tools <$2.5k |61010"
+            }
+          ]
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTI=",
+          "uuid": "tty_lbctvm31vd4ppd88q283mof41k",
+          "name": "2. Department",
+          "isRequired": true,
+          "selectedValues": [
+            {
+              "id": "VGFnVmFsdWU6MjQ0Nzc3ODI=",
+              "uuid": "tvl_3q6na4td454751ludrb7n7utfk",
+              "value": "66-Electrical Engineering"
+            }
+          ]
+        },
+        {
+          "id": "VGFnVHlwZToyMjE2OTk=",
+          "uuid": "tty_ad5kmj9e156ov5nvoks2dveomo",
+          "name": "3. Justification and Notes",
+          "note": "CZV23224 created and 0011 EE tool for R&D Engineering",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTM=",
+          "uuid": "tty_cs1g6o1re55qjfhtk84r3vchc0",
+          "name": "4. PO in Oracle (Y/N)?",
+          "isRequired": true,
+          "selectedValues": [
+            {
+              "id": "VGFnVmFsdWU6OTI5MDAyMQ==",
+              "uuid": "tvl_6i8m1kfp4l6ar1e7tabiln488g",
+              "value": "Yes"
+            }
+          ]
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTQ=",
+          "uuid": "tty_6k0me2dgt93jd8oqbomiqqib44",
+          "name": "5. PO #",
+          "isRequired": false,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZTozMDE5Mzk=",
+          "uuid": "tty_e1cv35rji922n1knrksodb5ne4",
+          "name": "9. Invoice #",
+          "isRequired": false,
+          "selectedValues": []
+        }
+      ],
+      "network": "VISA",
+      "isParent": false,
+      "reviews": [],
+      "amount": 161.81,
+      "transactedAmount": 161.81,
+      "fees": 0,
+      "receiptStatus": "NOT_ATTACHED",
+      "reviewers": [
+        { "approverType": "BUDGET_OWNER", "status": "WAITING" },
+        { "approverType": "BOOKKEEPER", "status": "WAITING" }
+      ],
+      "cardId": "Q2FyZDoxNTc2MzM4NQ==",
+      "cardUuid": "crd_hmbskbbkdh7dbak796vesb22g0",
+      "cardLastFour": "2345",
+      "cardType": "VIRTUAL_MEMBER",
+      "receiptSyncStatus": "NO_ATTACHMENTS",
+      "merchantCategoryCode": "5533",
+      "cardPresent": false,
+      "clearingReference": "0002306005703184956"
+    },
+    {
+      "id": "VHJhbnNhY3Rpb246OTc5MjM1MjEtZTIwNi00OGZmLTljOGMtM2QzMGU4MTcwYmY2",
+      "uuid": "txr_iu93a8f20p4fv74c7koeg5obuo",
+      "childTransactionIds": [],
+      "childTransactionUuids": [],
+      "isLocked": false,
+      "isReconciled": false,
+      "transactionType": "AUTHORIZATION",
+      "userId": "VXNlcjoyMDQwNTIz",
+      "userUuid": "usr_t8kcpum67d68l5gka3pif5367k",
+      "userName": "Christopher Johnson",
+      "rawMerchantName": "SOUTH BAY FORD LINCOLN",
+      "merchantName": "South Bay Ford Lincoln",
+      "budgetId": "QnVkZ2V0OjU5NjE4OQ==",
+      "budgetUuid": "bgt_bf36bjhc1l70j23cnnpq3sflf0",
+      "budgetName": "Validation Team Budget",
+      "currencyData": {
+        "exchangeRate": 1,
+        "exponent": 2,
+        "originalCurrencyAmount": "144327",
+        "originalCurrencyCode": "USD",
+        "symbol": "$"
+      },
+      "receiptRequired": true,
+      "reviewRequired": true,
+      "occurredTime": "2026-01-05T19:24:48.000+00:00",
+      "updatedTime": "2026-01-05T19:58:09.000+00:00",
+      "complete": true,
+      "tags": [
+        {
+          "isRequired": true,
+          "selectedTagValues": ["Machinery Repairs & Maintenance |82009"],
+          "tagType": { "name": "1. Category" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": ["67-Validation & Test"],
+          "tagType": { "name": "2. Department" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "3. Justification and Notes" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": ["No"],
+          "tagType": { "name": "4. PO in Oracle (Y/N)?" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "5. PO #" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "9. Invoice #" }
+        }
+      ],
+      "customFields": [
+        {
+          "id": "VGFnVHlwZToyMjE2OTg=",
+          "uuid": "tty_dg4f45iea57s786566ikmcu3dk",
+          "name": "1. Category",
+          "isRequired": true,
+          "selectedValues": [
+            {
+              "id": "VGFnVmFsdWU6MzEwMDcwOTI=",
+              "uuid": "tvl_ov4bfti1el21b93grfc78mit7k",
+              "value": "Machinery Repairs & Maintenance |82009"
+            }
+          ]
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTI=",
+          "uuid": "tty_lbctvm31vd4ppd88q283mof41k",
+          "name": "2. Department",
+          "isRequired": true,
+          "selectedValues": [
+            {
+              "id": "VGFnVmFsdWU6MjQ0Nzc3ODE=",
+              "uuid": "tvl_21ea1ibj8h76b7ugbkp92nnue8",
+              "value": "67-Validation & Test"
+            }
+          ]
+        },
+        {
+          "id": "VGFnVHlwZToyMjE2OTk=",
+          "uuid": "tty_ad5kmj9e156ov5nvoks2dveomo",
+          "name": "3. Justification and Notes",
+          "note": "White Ford dually servicing, oil change, fuel filter change, air &A/C filter change, brake light bulb &programming.",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTM=",
+          "uuid": "tty_cs1g6o1re55qjfhtk84r3vchc0",
+          "name": "4. PO in Oracle (Y/N)?",
+          "isRequired": true,
+          "selectedValues": [
+            {
+              "id": "VGFnVmFsdWU6OTI5MDAyMA==",
+              "uuid": "tvl_9i4uvtoeut5flaa5o11c285q2s",
+              "value": "No"
+            }
+          ]
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTQ=",
+          "uuid": "tty_6k0me2dgt93jd8oqbomiqqib44",
+          "name": "5. PO #",
+          "isRequired": false,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZTozMDE5Mzk=",
+          "uuid": "tty_e1cv35rji922n1knrksodb5ne4",
+          "name": "9. Invoice #",
+          "isRequired": false,
+          "selectedValues": []
+        }
+      ],
+      "network": "VISA",
+      "isParent": false,
+      "reviews": [],
+      "amount": 1443.27,
+      "transactedAmount": 1443.27,
+      "fees": 0,
+      "receiptStatus": "ATTACHED",
+      "reviewers": [
+        { "approverType": "BUDGET_OWNER", "status": "WAITING" },
+        { "approverType": "BOOKKEEPER", "status": "WAITING" }
+      ],
+      "cardId": "Q2FyZDoxMzk2NzA2MA==",
+      "cardUuid": "crd_5phagrca6l1af8gmqqrug25vjg",
+      "cardLastFour": "0292",
+      "cardType": "PHYSICAL",
+      "receiptSyncStatus": "NO_ATTACHMENTS",
+      "merchantCategoryCode": "5511",
+      "cardPresent": true,
+      "merchantLocation": {
+        "city": "HAWTHORNE",
+        "state": "CA",
+        "postalCode": "90250",
+        "country": "US"
+      },
+      "clearingReference": "0002306005698886369"
+    },
+    {
+      "id": "VHJhbnNhY3Rpb246ZDcxMjcyZTgtMzcyYS00Y2IyLWJhMjgtY2VjZDUwM2NjNDE4",
+      "uuid": "txr_qs975q1n596b5eh8pr6l0f6430",
+      "childTransactionIds": [],
+      "childTransactionUuids": [],
+      "isLocked": false,
+      "isReconciled": false,
+      "transactionType": "AUTHORIZATION",
+      "userId": "VXNlcjoxODI5NDEx",
+      "userUuid": "usr_4oee7qvj110o3b4t4i2h0bpfdk",
+      "userName": "Leandro Landgraf",
+      "rawMerchantName": "ALDI 56 772",
+      "merchantName": "Aldi",
+      "budgetId": "QnVkZ2V0Ojc1NTcxMw==",
+      "budgetUuid": "bgt_n8rjoofn4t075bg3k79nvedlf4",
+      "budgetName": "MIRA Park (UK) Ops",
+      "currencyData": {
+        "exchangeRate": 1.3505059480667114,
+        "exponent": 2,
+        "originalCurrencyAmount": "12559",
+        "originalCurrencyCode": "GBP",
+        "symbol": "£"
+      },
+      "receiptRequired": true,
+      "reviewRequired": true,
+      "occurredTime": "2026-01-05T17:22:58.000+00:00",
+      "updatedTime": "2026-01-05T17:23:02.000+00:00",
+      "complete": false,
+      "tags": [
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "1. Category" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": ["14-Powertrain Engineering - CZV"],
+          "tagType": { "name": "2. Department" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "3. Justification and Notes" }
+        },
+        {
+          "isRequired": true,
+          "selectedTagValues": [],
+          "tagType": { "name": "4. PO in Oracle (Y/N)?" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "5. PO #" }
+        },
+        {
+          "isRequired": false,
+          "selectedTagValues": [],
+          "tagType": { "name": "9. Invoice #" }
+        }
+      ],
+      "customFields": [
+        {
+          "id": "VGFnVHlwZToyMjE2OTg=",
+          "uuid": "tty_dg4f45iea57s786566ikmcu3dk",
+          "name": "1. Category",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTI=",
+          "uuid": "tty_lbctvm31vd4ppd88q283mof41k",
+          "name": "2. Department",
+          "isRequired": true,
+          "selectedValues": [
+            {
+              "id": "VGFnVmFsdWU6MjM0ODUzODQ=",
+              "uuid": "tvl_5or30tebel23d44q310juc7ajc",
+              "value": "14-Powertrain Engineering - CZV"
+            }
+          ]
+        },
+        {
+          "id": "VGFnVHlwZToyMjE2OTk=",
+          "uuid": "tty_ad5kmj9e156ov5nvoks2dveomo",
+          "name": "3. Justification and Notes",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTM=",
+          "uuid": "tty_cs1g6o1re55qjfhtk84r3vchc0",
+          "name": "4. PO in Oracle (Y/N)?",
+          "isRequired": true,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZToyMjM0NTQ=",
+          "uuid": "tty_6k0me2dgt93jd8oqbomiqqib44",
+          "name": "5. PO #",
+          "isRequired": false,
+          "selectedValues": []
+        },
+        {
+          "id": "VGFnVHlwZTozMDE5Mzk=",
+          "uuid": "tty_e1cv35rji922n1knrksodb5ne4",
+          "name": "9. Invoice #",
+          "isRequired": false,
+          "selectedValues": []
+        }
+      ],
+      "network": "VISA",
+      "isParent": false,
+      "reviews": [],
+      "amount": 169.61,
+      "transactedAmount": 169.61,
+      "fees": 0,
+      "receiptStatus": "NOT_ATTACHED",
+      "reviewers": [
+        { "approverType": "BUDGET_OWNER", "status": "WAITING" },
+        { "approverType": "BOOKKEEPER", "status": "WAITING" }
+      ],
+      "cardId": "Q2FyZDoxMjg3NTkxNw==",
+      "cardUuid": "crd_5qe3d6kg7l5jrfvme2n7cshdo4",
+      "cardLastFour": "3053",
+      "cardType": "PHYSICAL",
+      "receiptSyncStatus": "NO_ATTACHMENTS",
+      "merchantCategoryCode": "5411",
+      "cardPresent": true,
+      "merchantLocation": { "city": "HINCKLEY", "country": "GB" },
+      "clearingReference": "0002346005625782776"
+    }
+  ]
+}

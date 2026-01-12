@@ -1,0 +1,79 @@
+[
+  {
+    "id": 69000630118,
+    "name": "DevOps",
+    "description": "Kicks off devops assignment workflow",
+    "escalate_to": null,
+    "unassigned_for": null,
+    "agent_ids": [69013042475, 69030996455],
+    "created_at": "2022-02-09T17:14:12Z",
+    "updated_at": "2022-02-21T15:31:54Z",
+    "allow_agents_to_change_availability": false,
+    "agent_availability_status": false,
+    "business_calendar_id": 69000076318,
+    "type": "support_agent_group",
+    "automatic_agent_assignment": { "enabled": false }
+  },
+  {
+    "id": 69000521031,
+    "name": "H1 IT Support",
+    "description": "Internal H1 IT support team.",
+    "escalate_to": null,
+    "unassigned_for": null,
+    "agent_ids": [
+      69010960305, 69011813336, 69013042475, 69015615959, 69030996455
+    ],
+    "created_at": "2021-08-13T17:17:00Z",
+    "updated_at": "2021-12-13T14:09:44Z",
+    "allow_agents_to_change_availability": false,
+    "agent_availability_status": false,
+    "business_calendar_id": 69000076318,
+    "type": "support_agent_group",
+    "automatic_agent_assignment": { "enabled": false }
+  },
+  {
+    "id": 69000632384,
+    "name": "Hardware Procurement",
+    "description": "Group for Hardware Procurement tickets which may need to sit for some time",
+    "escalate_to": null,
+    "unassigned_for": null,
+    "agent_ids": [69010960305, 69011813336, 69013042475, 69030996455],
+    "created_at": "2022-05-10T14:15:34Z",
+    "updated_at": "2022-05-10T14:15:43Z",
+    "allow_agents_to_change_availability": false,
+    "agent_availability_status": false,
+    "business_calendar_id": 69000076318,
+    "type": "support_agent_group",
+    "automatic_agent_assignment": { "enabled": false }
+  },
+  {
+    "id": 69000639671,
+    "name": "Information Security Group",
+    "description": "This group will answer all tickets related to security incidents.",
+    "escalate_to": 69010960305,
+    "unassigned_for": "1d",
+    "agent_ids": [69010960305, 69015615959],
+    "created_at": "2023-08-30T16:57:59Z",
+    "updated_at": "2023-08-30T17:00:56Z",
+    "allow_agents_to_change_availability": true,
+    "agent_availability_status": true,
+    "business_calendar_id": 69000076318,
+    "type": "support_agent_group",
+    "automatic_agent_assignment": { "enabled": false }
+  },
+  {
+    "id": 69000630324,
+    "name": "Onboarding/Offboarding",
+    "description": "Place Onboarding and offboarding tickets in this group to exclude from reporting",
+    "escalate_to": null,
+    "unassigned_for": null,
+    "agent_ids": [69010960305, 69011813336, 69013042475, 69030996455],
+    "created_at": "2022-02-17T21:10:31Z",
+    "updated_at": "2022-02-17T21:11:08Z",
+    "allow_agents_to_change_availability": false,
+    "agent_availability_status": false,
+    "business_calendar_id": 69000076318,
+    "type": "support_agent_group",
+    "automatic_agent_assignment": { "enabled": false }
+  }
+]

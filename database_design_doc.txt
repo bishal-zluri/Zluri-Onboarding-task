@@ -1,0 +1,15 @@
+Reasons to choose Postgres over MongoDb:
+
+1. Efficient Relational joins:
+To find status of a group, we need to find status of each and every user and for that, 
+we can use relational joins by postgres to efficiently find user status using joins in postgres.
+
+2. Schema enforcement for the record:
+The objective of the pipeline is to produce a reconciled, high-quality dataset with a 
+consistent structure (group_id, status, user_ids, timestamps). PostgreSQL enforces strict 
+data typing and schema definitions. This ensures that the final data serving layer remains clean 
+and predictable, preventing malformed data (which might easily slip into a schema-less document store) from entering the system.
+
+3. Easy access to data:
+Can use DB query to access the data easily.
+
