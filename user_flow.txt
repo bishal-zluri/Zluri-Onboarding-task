@@ -1,0 +1,24 @@
+S3 (agents + agent_details + roles)
+            │
+            ▼
+process_agents_data()
+  ├─ join agents + details
+  ├─ explode role_ids
+  ├─ join roles
+  └─ aggregate role_names, group_ids
+            │
+            ▼
+transform_and_reconcile_users()
+  ├─ read existing users from DB
+  ├─ FULL OUTER JOIN (new vs old)
+  ├─ status logic:
+  │     if user_id present today → ACTIVE
+  │     else                     → INACTIVE
+  ├─ enforce NOT NULL
+  └─ cache & validate
+            │
+            ▼
+users_loader (UPSERT)
+  ├─ write to users_stage
+  ├─ INSERT ... ON CONFLICT(user_id)
+  └─ users table updated

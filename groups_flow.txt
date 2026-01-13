@@ -1,0 +1,30 @@
+S3 (admin_groups)
+        │
+        ▼
+process_groups_data()
+  ├─ extract user_ids[]
+  ├─ normalize array
+  └─ clean group rows
+        │
+        ▼
+transform_and_reconcile_groups()
+        │
+        ├─ READ users table  ◄───────────────┐
+        │                                     │
+        ├─ explode group.user_ids             │
+        ├─ join user_id → users.status        │
+        │                                     │
+        ├─ GROUP STATUS LOGIC                 │
+        │     if ANY user.status == active    │
+        │        → group = ACTIVE             │
+        │     else                            │
+        │        → group = INACTIVE           │
+        │                                     │
+        ├─ FULL OUTER JOIN with DB groups
+        │     missing from S3 → INACTIVE
+        │
+        ▼
+groups_loader (UPSERT)
+  ├─ write to groups_stage
+  ├─ INSERT ... ON CONFLICT(group_id)
+  └─ groups table updated
