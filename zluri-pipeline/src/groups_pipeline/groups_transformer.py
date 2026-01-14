@@ -20,17 +20,18 @@ def transform_and_reconcile_groups(spark):
         col("id").cast("long").alias("group_id"),
         col("name").alias("group_name"),
         col("description"),
+        col("parent_group_id").cast("long").alias("parent_group_id"), 
         col("created_at").cast("timestamp"),
         col("updated_at").cast("timestamp"),
-        col("user_ids") # Array of user IDs
+        col("user_ids")
     ).filter(col("group_id").isNotNull())
 
     print(f"[INGEST] Valid S3 Groups: {df_groups_clean.count()}")
 
     # ---------------------------------------------------------
-    # STEP 2: Generate GroupMembers & Calculate Status
+    # STEP 2: Generate GroupMembers & Calculate Direct Status
     # ---------------------------------------------------------
-    print("\n=== generating GroupMembers and Calculating Status ===")
+    print("\n=== Calculating Direct Group Status (User Based) ===")
     
     # A. Get User Status from DB
     df_db_users = get_db_table(spark, TABLE_USERS)
@@ -48,7 +49,6 @@ def transform_and_reconcile_groups(spark):
         )
 
     # B. Explode to create GroupMembers Table
-    # This creates one row per User per Group
     df_members_exploded = df_groups_clean.select(
         col("group_id"),
         explode(col("user_ids")).alias("member_id")
@@ -62,23 +62,79 @@ def transform_and_reconcile_groups(spark):
     ).select(
         col("group_id"),
         col("member_id").alias("user_id"),
-        # If user not found in DB, assume inactive
         coalesce(col("u_status"), lit("inactive")).alias("user_status")
     )
 
-    # D. Calculate Group Status
-    # Logic: Group is Active if at least ONE member is 'active'
-    df_group_status_calc = df_group_members.groupBy("group_id").agg(
-        spark_max(when(col("user_status") == "active", 1).otherwise(0)).alias("has_active_member")
+    # D. Calculate Direct Status (Based on Users only)
+    df_direct_status = df_group_members.groupBy("group_id").agg(
+        spark_max(when(col("user_status") == "active", 1).otherwise(0)).alias("is_active_direct")
+    )
+
+    # ---------------------------------------------------------
+    # STEP 2.5: Bottom-Up Propagation (N-Level Dynamic)
+    # ---------------------------------------------------------
+    print("\n=== Propagating Status Upwards (Leaf -> Root) ===")
+
+    # Initialize Hierarchy DataFrame
+    current_df = df_groups_clean.select("group_id", "parent_group_id") \
+        .join(df_direct_status, on="group_id", how="left") \
+        .na.fill(0, ["is_active_direct"]) \
+        .withColumn("final_active_flag", col("is_active_direct")) \
+        .cache()
+
+    # Iterative Propagation Loop
+    iteration = 0
+    
+    while True:
+        iteration += 1
+        
+        # A. Find "Active Children" that have Parents
+        active_nodes_with_parents = current_df.filter(col("final_active_flag") == 1) \
+                                              .filter(col("parent_group_id").isNotNull())
+        
+        # B. Identify Parents that need to be updated
+        parents_to_activate = current_df.alias("parent") \
+            .join(active_nodes_with_parents.alias("child"), 
+                  col("parent.group_id") == col("child.parent_group_id"), 
+                  "inner") \
+            .filter(col("parent.final_active_flag") == 0) \
+            .select(col("parent.group_id").alias("target_id")) \
+            .distinct()
+            
+        # C. Convergence Check
+        count_changes = parents_to_activate.count()
+        if count_changes == 0:
+            print(f"-> Convergence reached after {iteration-1} iterations.")
+            break
+            
+        print(f"   Iteration {iteration}: Propagating activity to {count_changes} parent groups...")
+
+        # D. Apply Updates
+        current_df = current_df.alias("main").join(
+            parents_to_activate.alias("updates"),
+            col("main.group_id") == col("updates.target_id"),
+            "left"
+        ).select(
+            col("main.group_id"),
+            col("main.parent_group_id"),
+            col("main.is_active_direct"),
+            when(
+                (col("main.final_active_flag") == 1) | (col("updates.target_id").isNotNull()), 
+                1
+            ).otherwise(0).alias("final_active_flag")
+        ).localCheckpoint()
+
+    # Final Status Mapping
+    df_calc_status = current_df.select(
+        col("group_id"),
+        when(col("final_active_flag") == 1, "active").otherwise("inactive").alias("derived_status")
     )
 
     # E. Join Status back to Groups
-    df_groups_with_status = df_groups_clean.join(df_group_status_calc, on="group_id", how="left") \
-        .withColumn("derived_status", 
-                    when(col("has_active_member") == 1, "active").otherwise("inactive"))
+    df_groups_with_status = df_groups_clean.join(df_calc_status, on="group_id", how="left")
 
     # ---------------------------------------------------------
-    # STEP 3: Reconcile with DB (Handle Deleted Groups)
+    # STEP 3: Reconcile with DB
     # ---------------------------------------------------------
     print("\n=== Reconciling with Existing DB Groups ===")
     df_db_groups = get_db_table(spark, TABLE_GROUPS)
@@ -86,22 +142,22 @@ def transform_and_reconcile_groups(spark):
     if df_db_groups is None:
         # Initial Load
         df_final_groups = df_groups_with_status.select(
-            "group_id", "group_name", "description", "user_ids",
+            "group_id", "group_name", "description", "user_ids", "parent_group_id",
             col("derived_status").alias("status"), 
             "created_at", "updated_at"
         )
     else:
-        # Prepare DB Data for Join
+        # Prepare DB Data
         sel_cols = [
             col("group_id").alias("db_gid"),
             col("group_name").alias("db_gname"),
             col("description").alias("db_desc"),
+            col("parent_group_id").alias("db_parent_id"),
             col("status").alias("db_status"),
             col("created_at").alias("db_created"),
             col("updated_at").alias("db_updated")
         ]
         
-        # Handle Array vs String mismatch for user_ids
         if "user_ids" in df_db_groups.columns:
             sel_cols.append(split(col("user_ids"), ",").cast("array<long>").alias("db_user_ids"))
         else:
@@ -109,21 +165,22 @@ def transform_and_reconcile_groups(spark):
 
         df_db_renamed = df_db_groups.select(*sel_cols)
 
-        # Full Join
         df_joined = df_groups_with_status.join(
             df_db_renamed,
             df_groups_with_status.group_id == df_db_renamed.db_gid,
             how="full_outer"
         )
 
-        # Final Selection
         df_final_groups = df_joined.select(
             coalesce(col("group_id"), col("db_gid")).alias("group_id"),
             coalesce(col("group_name"), col("db_gname")).alias("group_name"),
             coalesce(col("description"), col("db_desc")).alias("description"),
+            
+            # Prioritize S3 parent_group_id over DB to fix incorrect values
+            coalesce(col("parent_group_id"), col("db_parent_id")).alias("parent_group_id"),
+            
             coalesce(col("user_ids"), col("db_user_ids")).alias("user_ids"),
             
-            # Status Logic: If missing in S3 -> Inactive, else Calculated Status
             when(col("group_id").isNull(), "inactive")
             .otherwise(col("derived_status"))
             .alias("status"),
@@ -135,9 +192,6 @@ def transform_and_reconcile_groups(spark):
     # ---------------------------------------------------------
     # STEP 4: Write Both Tables
     # ---------------------------------------------------------
-    # 1. df_final_groups: The main groups list (Upserted)
-    # 2. df_group_members: The join table (Synced)
-    
     write_to_db(df_final_groups, df_group_members, spark)
 
 

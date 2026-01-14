@@ -1,11 +1,11 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import input_file_name, col, array, lit, when, size
+from pyspark.sql.functions import input_file_name, col, array, lit, when, size, explode
 from functools import reduce
 
 # --- 1. CONFIGURATION ---
 BUCKET_NAME = "zluri-data-assignment"
 BASE_FOLDER = "assignment-jan-2026"
-DAY_FOLDER = "sync-day1"
+DAY_FOLDER = "sync-day2"
 
 # TARGET ENTITY FOLDER
 ENTITY_GROUPS = "admin_groups" 
@@ -51,13 +51,18 @@ def read_s3_data(spark, folder_name):
 
 def process_groups_data(spark):
     """
-    Ingests Group data and normalizes 'user_ids' to an array column.
+    Ingests Group data. Handles nested 'results' array if present.
     """
     print(f"--- Loading Groups from folder: {ENTITY_GROUPS} ---")
     df_groups = read_s3_data(spark, ENTITY_GROUPS)
     
     if df_groups is None:
         return None
+
+    # Handle 'results' wrapper if it exists (Common in API responses)
+    if "results" in df_groups.columns:
+        print("  -> Exploding 'results' array...")
+        df_groups = df_groups.select(explode(col("results")).alias("g")).select("g.*")
 
     cols = df_groups.columns
     
@@ -75,5 +80,10 @@ def process_groups_data(spark):
     df_groups = df_groups.withColumn("user_ids", 
                                      when(col("user_ids").isNull(), array())
                                      .otherwise(col("user_ids")))
+    
+    # Normalize parent_group_id
+    if "parent_group_id" not in df_groups.columns:
+        print("  [!] 'parent_group_id' missing in source, defaulting to null.")
+        df_groups = df_groups.withColumn("parent_group_id", lit(None))
 
     return df_groups
