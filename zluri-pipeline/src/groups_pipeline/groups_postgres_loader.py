@@ -1,5 +1,5 @@
-from pyspark.sql.functions import col, concat_ws
 import os
+from pyspark.sql.functions import col, concat_ws
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -15,29 +15,44 @@ DB_PROPERTIES = {
 }
 
 TABLE_GROUPS = "groups"
-TABLE_USERS = "users"  # Needed for cross-referencing in transformer
+TABLE_GROUP_MEMBERS = "group_members" # New Table
+TABLE_USERS = "users"
 TEMP_GROUPS = "groups_stage"
+TEMP_MEMBERS = "group_members_stage"
 
 def execute_raw_sql(spark, sql_query):
     """Executes raw SQL using the JVM driver."""
+    conn = None
     try:
         driver_manager = spark.sparkContext._gateway.jvm.java.sql.DriverManager
-        con = driver_manager.getConnection(DB_URL, DB_PROPERTIES["user"], DB_PROPERTIES["password"])
-        stmt = con.createStatement()
+        conn = driver_manager.getConnection(DB_URL, DB_PROPERTIES["user"], DB_PROPERTIES["password"])
+        stmt = conn.createStatement()
         stmt.execute(sql_query)
-        con.close()
     except Exception as e:
-        print(f"❌ [SQL Error]: {e}")
-        raise e
+        # Don't raise immediately on "exists" errors, let caller handle or ignore
+        if "already exists" not in str(e).lower():
+            print(f"❌ [SQL Error]: {e}")
+            raise e
+    finally:
+        if conn: conn.close()
 
-def init_groups_table(spark):
+def _ensure_pk(spark, table, pk_col):
+    try:
+        execute_raw_sql(spark, f"ALTER TABLE {table} ADD PRIMARY KEY {pk_col};")
+        print(f"   -> Added Primary Key to {table}.")
+    except Exception:
+        pass # Likely already exists
+
+def init_db(spark):
     """
-    Creates table if missing, and attempts to FORCE Primary Key if it exists but is missing the constraint.
+    Initializes Groups and GroupMembers tables.
     """
-    # 1. Basic Creation
-    ddl = f"""
+    print("\n--- [DB] Initializing Group Schemas ---")
+
+    # 1. GROUPS TABLE
+    execute_raw_sql(spark, f"""
     CREATE TABLE IF NOT EXISTS {TABLE_GROUPS} (
-        group_id BIGINT PRIMARY KEY,
+        group_id BIGINT,
         group_name TEXT NOT NULL,
         description TEXT,
         user_ids TEXT, 
@@ -45,39 +60,29 @@ def init_groups_table(spark):
         created_at TIMESTAMP WITH TIME ZONE,
         updated_at TIMESTAMP WITH TIME ZONE
     );
-    """
-    execute_raw_sql(spark, ddl)
+    """)
+    _ensure_pk(spark, TABLE_GROUPS, "(group_id)")
 
-    # 2. Self-Healing: Force Primary Key
-    try:
-        print(f"--- [DB] Verifying Constraints for '{TABLE_GROUPS}' ---")
-        alter_sql = f"ALTER TABLE {TABLE_GROUPS} ADD PRIMARY KEY (group_id);"
-        execute_raw_sql(spark, alter_sql)
-        print("   -> Added missing Primary Key constraint.")
-    except Exception as e:
-        err = str(e).lower()
-        if "multiple primary keys" in err or "already exists" in err:
-            print("   -> Primary Key already exists. (Good)")
-        elif "could not create unique index" in err:
-            print("❌ [CRITICAL] Cannot add Primary Key: Duplicate IDs exist in DB.")
-            print("   PLEASE RUN: DROP TABLE groups;")
-            raise e
-        else:
-            print(f"   -> Constraint check skipped: {err[:50]}...")
+    # 2. GROUP_MEMBERS TABLE (New)
+    execute_raw_sql(spark, f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_GROUP_MEMBERS} (
+        group_id BIGINT,
+        user_id BIGINT,
+        user_status TEXT
+    );
+    """)
+    _ensure_pk(spark, TABLE_GROUP_MEMBERS, "(group_id, user_id)")
+
 
 def get_db_table(spark, table_name):
     """
     Reads a table from Postgres. 
-    Used by Transformer to read both 'users' (for status) and 'groups'.
     """
     try:
-        # Helper: Ensure schema exists if we are asking for groups
-        if table_name == TABLE_GROUPS:
-            init_groups_table(spark)
-            
+        init_db(spark) # Ensure exists first
         df = spark.read.jdbc(url=DB_URL, table=table_name, properties=DB_PROPERTIES)
         
-        # Standardize IDs to Long for Spark operations
+        # Standardize IDs to Long
         if "user_id" in df.columns:
             df = df.withColumn("user_id", col("user_id").cast("long"))
         if "group_id" in df.columns:
@@ -85,36 +90,27 @@ def get_db_table(spark, table_name):
             
         return df
     except Exception as e:
-        print(f"⚠️ Could not read table '{table_name}' (It might not exist yet).")
+        print(f"⚠️ Could not read table '{table_name}': {e}")
         return None
 
-def write_to_db(df, spark):
+def write_to_db(df_groups, df_members, spark):
     """
-    Writes reconciled groups using UPSERT.
+    Writes Groups (Upsert) and GroupMembers (Sync).
     """
-    print("\n--- Writing Groups to DB (UPSERT) ---")
+    init_db(spark)
+
+    # --- PART 1: GROUPS (UPSERT) ---
+    print("\n--- Writing GROUPS (UPSERT) ---")
     
-    # 1. Convert Arrays to Strings
-    # Your transformer leaves 'user_ids' as an Array<Long>.
-    # Postgres JDBC requires 'String' for the TEXT column.
-    df_write = df
-    if "user_ids" in [f.name for f in df.schema.fields]:
-        dtype = dict(df.dtypes)["user_ids"]
-        # Check if it is an array type (e.g., 'array<bigint>')
-        if "array" in dtype:
-            print("-> Converting 'user_ids' Array to String for DB storage...")
-            df_write = df.withColumn("user_ids", concat_ws(",", col("user_ids")))
+    # Convert Array to String for display column
+    df_write_groups = df_groups
+    if "user_ids" in [f.name for f in df_groups.schema.fields]:
+        if "array" in dict(df_groups.dtypes)["user_ids"]:
+            df_write_groups = df_groups.withColumn("user_ids", concat_ws(",", col("user_ids")))
 
     try:
-        # 2. Write to Staging
-        df_write.write.jdbc(
-            url=DB_URL,
-            table=TEMP_GROUPS,
-            mode="overwrite",
-            properties=DB_PROPERTIES
-        )
+        df_write_groups.write.jdbc(DB_URL, TEMP_GROUPS, "overwrite", DB_PROPERTIES)
 
-        # 3. UPSERT SQL
         upsert_sql = f"""
         INSERT INTO {TABLE_GROUPS} (
             group_id, group_name, description, 
@@ -132,17 +128,34 @@ def write_to_db(df, spark):
             status      = EXCLUDED.status,
             updated_at  = EXCLUDED.updated_at;
         """
-        
         execute_raw_sql(spark, upsert_sql)
-        print("✅ [Success] Groups UPSERT completed.")
-        
-        # 4. Cleanup
-        execute_raw_sql(spark, f"DROP TABLE {TEMP_GROUPS}")
-        
-        # 5. Verify
-        print("\n--- FINAL GROUPS STATE (Top 10) ---")
-        df_stored = spark.read.jdbc(DB_URL, TABLE_GROUPS, properties=DB_PROPERTIES)
-        df_stored.orderBy("group_id").show(10, truncate=False)
-        
+        print("✅ Groups Upserted.")
     except Exception as e:
-        print(f"❌ [Error] DB Write Failed: {e}")
+        print(f"❌ Groups Write Failed: {e}")
+    finally:
+        execute_raw_sql(spark, f"DROP TABLE IF EXISTS {TEMP_GROUPS}")
+
+    # --- PART 2: GROUP MEMBERS (SYNC) ---
+    if df_members and not df_members.isEmpty():
+        print(f"\n--- Writing GROUP MEMBERS ({df_members.count()} rows) ---")
+        try:
+            df_members.write.jdbc(DB_URL, TEMP_MEMBERS, "overwrite", DB_PROPERTIES)
+
+            # 1. Delete existing members for groups we are updating
+            delete_sql = f"""
+            DELETE FROM {TABLE_GROUP_MEMBERS} 
+            WHERE group_id IN (SELECT group_id FROM {TEMP_MEMBERS})
+            """
+            execute_raw_sql(spark, delete_sql)
+
+            # 2. Insert new members
+            insert_sql = f"""
+            INSERT INTO {TABLE_GROUP_MEMBERS} (group_id, user_id, user_status)
+            SELECT group_id, user_id, user_status FROM {TEMP_MEMBERS}
+            """
+            execute_raw_sql(spark, insert_sql)
+            print("✅ Group Members Synced.")
+        except Exception as e:
+            print(f"❌ Group Members Write Failed: {e}")
+        finally:
+            execute_raw_sql(spark, f"DROP TABLE IF EXISTS {TEMP_MEMBERS}")

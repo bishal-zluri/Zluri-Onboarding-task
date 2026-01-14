@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import input_file_name, col, explode
+from pyspark.sql.functions import input_file_name, col, explode, array, lit, when, pow, coalesce
 from functools import reduce
 
 # --- 1. CONFIGURATION ---
@@ -8,31 +8,19 @@ BASE_FOLDER = "assignment-jan-2026"
 DAY_FOLDER = "sync-day1" 
 
 ENTITY_TRANSACTIONS = "transactions"
+ENTITY_CARDS = "cards"
+ENTITY_BUDGETS = "budgets"
 
 # Base S3A Path
 S3_BASE_PATH = f"s3a://{BUCKET_NAME}/{BASE_FOLDER}"
 
-# --- 2. SPARK SESSION FACTORY ---
-def create_spark_session(app_name="TransactionSchemaExtractor"):
-    return SparkSession.builder \
-        .appName(app_name) \
-        .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262") \
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
-        .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider") \
-        .config("spark.hadoop.fs.s3a.threads.keepalivetime", "60") \
-        .config("spark.hadoop.fs.s3a.connection.establish.timeout", "30000") \
-        .config("spark.hadoop.fs.s3a.connection.timeout", "30000") \
-        .config("spark.hadoop.fs.s3a.multipart.purge.age", "86400") \
-        .getOrCreate()
-
-# --- 3. GENERIC READER FUNCTION ---
+# --- 2. READER UTILS ---
 def read_s3_data(spark, folder_name):
     base_path = f"{S3_BASE_PATH}/{DAY_FOLDER}/{folder_name}/"
     formats = ['json', 'csv', 'parquet']
     found_dfs = []
 
     print(f"Scanning: {base_path} ...")
-
     for fmt in formats:
         full_pattern = f"{base_path}*.{fmt}"
         try:
@@ -55,50 +43,98 @@ def read_s3_data(spark, folder_name):
 
     return reduce(lambda df1, df2: df1.unionByName(df2, allowMissingColumns=True), found_dfs)
 
-# --- 4. DATA PROCESSING LOGIC ---
+# --- 3. DATA PROCESSING LOGIC ---
+
+def process_cards_data(spark):
+    """ Reads Cards Data for Joins """
+    print(f"--- Loading Cards ---")
+    df = read_s3_data(spark, ENTITY_CARDS)
+    if df is None: return None
+    
+    if "results" in df.columns:
+        df = df.select(explode(col("results")).alias("c")).select("c.*")
+
+    return df.select(
+        col("id").alias("card_id"),
+        col("name").alias("card_name"),
+        col("lastFour").alias("card_last_four"),
+        col("type").alias("card_type"),
+        col("status").alias("card_status")
+    )
+
+def process_budgets_data(spark):
+    """ Reads Budgets Data for Joins """
+    print(f"--- Loading Budgets ---")
+    df = read_s3_data(spark, ENTITY_BUDGETS)
+    if df is None: return None
+    
+    if "results" in df.columns:
+        df = df.select(explode(col("results")).alias("b")).select("b.*")
+    
+    cols = df.columns
+    desc_col = col("description").alias("budget_description") if "description" in cols else lit(None).alias("budget_description")
+
+    return df.select(
+        col("id").alias("budget_id"),
+        col("name").alias("budget_name"),
+        desc_col
+    )
 
 def process_transactions_schema(spark):
     """
-    Extracts Transaction data and maps it strictly to the provided Schema Diagram.
-    Target Columns: transaction_id, transaction_type, amount_in_dollars, original_amount, card_id
+    Extracts Transaction data.
     """
-    
-    # 1. Load Raw Data
+    print(f"--- Loading Transactions ---")
     df_trans_raw = read_s3_data(spark, ENTITY_TRANSACTIONS)
     
     if df_trans_raw is None:
         print("Critical Error: Missing Transaction data.")
-        return
+        return None
 
-    # 2. FLATTEN DATA
-    # The JSON structure is { "results": [ ... ] }, so we must explode the array first.
-    df_exploded = df_trans_raw.select(explode(col("results")).alias("t"))
+    # FLATTEN DATA
+    if "results" in df_trans_raw.columns:
+        df_exploded = df_trans_raw.select(explode(col("results")).alias("t"))
+    else:
+        df_exploded = df_trans_raw.select(col("*").alias("t"))
     
-    # 3. SELECT & MAP COLUMNS
-    # We map the JSON fields to the 'Transactions' entity attributes from your diagram.
+    cols = df_exploded.select("t.*").columns
+    
+    def get_col(c_name, alias_name):
+        if c_name in cols:
+            return col(f"t.{c_name}").alias(alias_name)
+        else:
+            return lit(None).alias(alias_name)
+
+    # Logic to handle minor units (cents) vs major units (dollars)
+    # Formula: amount * 10^(-exponent)
+    # Example: 12559 * 10^-2 = 125.59
+    amount_col = (col("t.currencyData.originalCurrencyAmount").cast("double") * \
+                  pow(lit(10), -col("t.currencyData.exponent").cast("int"))).alias("original_amount")
+
     df_final = df_exploded.select(
-        col("t.id").alias("transaction_id"),                                # Mapped to schema PK
-        col("t.transactionType").alias("transaction_type"),       
+        col("t.id").alias("transaction_id"),
+        get_col("transactionType", "transaction_type"),
+        get_col("transactionDate", "transaction_date"),
+        get_col("occurredTime", "occurred_time"), 
+        get_col("merchantName", "merchant_name"),
         
-        # Accessing nested field for original amount
-        col("t.currencyData.originalCurrencyAmount").alias("original_amount"), 
-        
-        # Accessing the currency_code
+        # Corrected Amount Logic
+        amount_col,
         col("t.currencyData.originalCurrencyCode").alias("currency_code"),
 
-        # Accessing the card id
-        col("t.cardId").alias("card_id")                                    # Foreign Key to Card table
+        # Foreign Keys
+        get_col("cardId", "card_id"),
+        get_col("budgetId", "budget_id")
     )
     
-    print(f"\n--- extracted {df_final.count()} transactions matching schema ---")
+    # Date Coalesce Logic
+    if "transaction_date" in df_final.columns and "occurred_time" in df_final.columns:
+        df_final = df_final.withColumn("transaction_date", coalesce(col("transaction_date"), col("occurred_time")))
+        df_final = df_final.drop("occurred_time")
+    elif "occurred_time" in df_final.columns:
+        df_final = df_final.withColumnRenamed("occurred_time", "transaction_date")
     
+    df_final = df_final.dropDuplicates(["transaction_id"])
+    
+    print(f"  -> Extracted {df_final.count()} unique transactions.")
     return df_final
-
-# --- 5. MAIN EXECUTION ---
-if __name__ == "__main__":
-    spark_session = create_spark_session()
-    final_df = process_transactions_schema(spark_session)
-    
-    if final_df:
-        final_df.printSchema()
-        final_df.show(truncate=False)
