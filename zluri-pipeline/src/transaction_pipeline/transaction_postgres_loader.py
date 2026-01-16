@@ -29,42 +29,30 @@ def execute_raw_sql(spark, sql_query):
     try:
         driver_manager = spark.sparkContext._gateway.jvm.java.sql.DriverManager
         conn = driver_manager.getConnection(DB_URL, DB_PROPERTIES["user"], DB_PROPERTIES["password"])
-        # Explicitly ensure auto-commit is on for DDL
         conn.setAutoCommit(True) 
         stmt = conn.createStatement()
         stmt.execute(sql_query)
     except Exception as e:
-        # Re-raise unless we are handling it in caller, but here we just log and raise
-        # Caller (init_db) will handle specific 'exists' logic
         print(f"   [SQL Execute Info]: {str(e)[:100]}...")
         raise e
     finally:
         if conn: conn.close()
 
 def _add_column_if_missing(spark, table, col_def):
-    """
-    Robustly adds a column. Handles 'already exists' for all Postgres versions.
-    """
     try:
-        print(f"   -> checking column: {col_def} on {table}")
-        # Standard ALTER TABLE without IF NOT EXISTS (works on all versions)
-        # We rely on the catch block to handle duplicates
+        # print(f"   -> checking column: {col_def} on {table}")
         sql = f"ALTER TABLE {table} ADD COLUMN {col_def}"
         execute_raw_sql(spark, sql)
-        print(f"   -> Added column: {col_def}")
     except Exception as e:
-        err = str(e).lower()
-        if "already exists" in err:
-            # Column exists, this is fine
+        if "already exists" in str(e).lower():
             pass
         else:
-            # Real error, print it
             print(f"⚠️ Warning during schema update: {e}")
 
 def init_db(spark):
     print("\n--- [DB] Initializing Transaction Tables ---")
     
-    # 1. Transactions Table (Base Creation)
+    # 1. Transactions Table
     try:
         execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_TRANS} (
@@ -80,13 +68,11 @@ def init_db(spark):
     except Exception as e:
         if "already exists" not in str(e).lower(): raise e
 
-    # 1b. Schema Evolution: Robustly add columns one by one
-    # This fixes the "column does not exist" error by forcing the check
     _add_column_if_missing(spark, TABLE_TRANS, "merchant_name TEXT")
     _add_column_if_missing(spark, TABLE_TRANS, "card_id TEXT")
     _add_column_if_missing(spark, TABLE_TRANS, "budget_id TEXT")
     
-    # 2. Transaction Cards (Link)
+    # 2. Transaction Cards
     try:
         execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_TRANS_CARDS} (
@@ -102,7 +88,7 @@ def init_db(spark):
     except Exception as e:
         if "already exists" not in str(e).lower(): raise e
     
-    # 3. Transaction Budgets (Link)
+    # 3. Transaction Budgets
     try:
         execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_TRANS_BUDGETS} (
@@ -117,16 +103,19 @@ def init_db(spark):
         if "already exists" not in str(e).lower(): raise e
 
 def get_existing_transaction_ids(spark):
-    """ Used for Delta Load filtering """
+    """ 
+    Used for Delta Load filtering.
+    UPDATED: Returns both transaction_id and original_amount to detect updates.
+    """
     try:
         init_db(spark)
         df = spark.read.jdbc(url=DB_URL, table=TABLE_TRANS, properties=DB_PROPERTIES)
-        return df.select("transaction_id")
+        # Select both ID and Amount to check for value changes
+        return df.select("transaction_id", "original_amount")
     except Exception:
         return None
 
 def load_transaction_pipeline(spark, df_trans, df_cards_join, df_budgets_join):
-    # Ensure DB is ready and schema is updated
     init_db(spark)
     
     # --- 1. Load Transactions (Upsert) ---
@@ -134,7 +123,6 @@ def load_transaction_pipeline(spark, df_trans, df_cards_join, df_budgets_join):
         print(f"--- Loading {df_trans.count()} Transactions ---")
         df_trans.write.jdbc(DB_URL, TEMP_TRANS, "overwrite", DB_PROPERTIES)
         
-        # Upsert with confirmed columns
         upsert_sql = f"""
         INSERT INTO {TABLE_TRANS} (
             transaction_id, transaction_type, transaction_date,
@@ -152,12 +140,13 @@ def load_transaction_pipeline(spark, df_trans, df_cards_join, df_budgets_join):
             original_amount = EXCLUDED.original_amount,
             merchant_name = EXCLUDED.merchant_name,
             card_id = EXCLUDED.card_id,
-            budget_id = EXCLUDED.budget_id;
+            budget_id = EXCLUDED.budget_id,
+            transaction_date = EXCLUDED.transaction_date;
         """
         execute_raw_sql(spark, upsert_sql)
         print("✅ Transactions Loaded.")
 
-    # --- 2. Load Transaction-Cards (Append/Sync) ---
+    # --- 2. Load Transaction-Cards ---
     if not df_cards_join.isEmpty():
         print(f"--- Loading {df_cards_join.count()} Card Links ---")
         df_cards_join.write.jdbc(DB_URL, TEMP_TC, "overwrite", DB_PROPERTIES)
@@ -171,12 +160,17 @@ def load_transaction_pipeline(spark, df_trans, df_cards_join, df_budgets_join):
             transaction_id, card_id, card_name, 
             card_last_four, card_type, card_status 
         FROM {TEMP_TC}
-        ON CONFLICT DO NOTHING;
+        ON CONFLICT (transaction_id, card_id) 
+        DO UPDATE SET
+            card_name = EXCLUDED.card_name,
+            card_last_four = EXCLUDED.card_last_four,
+            card_type = EXCLUDED.card_type,
+            card_status = EXCLUDED.card_status;
         """
         execute_raw_sql(spark, insert_sql)
         print("✅ Transaction-Card Links Loaded.")
 
-    # --- 3. Load Transaction-Budgets (Append/Sync) ---
+    # --- 3. Load Transaction-Budgets ---
     if not df_budgets_join.isEmpty():
         print(f"--- Loading {df_budgets_join.count()} Budget Links ---")
         df_budgets_join.write.jdbc(DB_URL, TEMP_TB, "overwrite", DB_PROPERTIES)
@@ -188,12 +182,14 @@ def load_transaction_pipeline(spark, df_trans, df_cards_join, df_budgets_join):
         SELECT 
             transaction_id, budget_id, budget_name, budget_description 
         FROM {TEMP_TB}
-        ON CONFLICT DO NOTHING;
+        ON CONFLICT (transaction_id, budget_id)
+        DO UPDATE SET
+            budget_name = EXCLUDED.budget_name,
+            budget_description = EXCLUDED.budget_description;
         """
         execute_raw_sql(spark, insert_sql)
         print("✅ Transaction-Budget Links Loaded.")
         
-    # Cleanup
     try:
         execute_raw_sql(spark, f"DROP TABLE IF EXISTS {TEMP_TRANS}")
         execute_raw_sql(spark, f"DROP TABLE IF EXISTS {TEMP_TC}")

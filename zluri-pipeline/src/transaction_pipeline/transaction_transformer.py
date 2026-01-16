@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit, when, coalesce, udf
+from pyspark.sql.functions import col, lit, when, coalesce, udf, substring
 from pyspark.sql.types import DoubleType, DecimalType
 import os
 import requests
@@ -11,30 +11,6 @@ load_dotenv()
 from s3_reader_transaction import process_transactions_schema, process_cards_data, process_budgets_data
 from transaction_postgres_loader import load_transaction_pipeline, get_existing_transaction_ids, POSTGRES_JAR
 
-# --- CURRENCY CONVERSION LOGIC ---
-def fetch_exchange_rate(currency, date_str):
-    if currency == "USD":
-        return 1.0
-    try:
-        # FIXED: Hardcoded Key to ensure workers can access it
-        API_KEY = os.getenv("API_KEY")
-        url = f"https://v6.exchangerate-api.com/v6/{API_KEY}/latest/{currency}"
-        
-        response = requests.get(url, timeout=3)
-        data = response.json()
-        
-        # Check success and get rate
-        if data.get("result") == "success":
-            rate = data.get("conversion_rates", {}).get("USD")
-            return float(rate) if rate else 1.0
-        return 1.0
-        
-    except Exception:
-        # In production, log this failure
-        return 1.0
-
-convert_currency_udf = udf(fetch_exchange_rate, DoubleType())
-
 def transform_and_load_transactions(spark):
     # 1. Ingest
     df_trans = process_transactions_schema(spark)
@@ -45,42 +21,107 @@ def transform_and_load_transactions(spark):
         print("No transactions to process.")
         return
 
-    # 2. Delta Check
-    print("\n=== Checking for New Transactions (Delta) ===")
-    existing_ids = get_existing_transaction_ids(spark)
+    # 2. Delta Check with Update Logic
+    print("\n=== Checking for New or Updated Transactions (Delta) ===")
+    existing_df = get_existing_transaction_ids(spark)
     
     df_new_trans = df_trans
-    if existing_ids and not existing_ids.isEmpty():
-        df_new_trans = df_trans.join(existing_ids, on="transaction_id", how="left_anti")
+    
+    if existing_df and not existing_df.isEmpty():
+        # Rename columns to avoid ambiguity during join
+        existing_df = existing_df.select(
+            col("transaction_id").alias("exist_id"), 
+            col("original_amount").alias("exist_amount")
+        )
+        
+        # Left join to identify New or Updated records
+        # Logic: 
+        # 1. exist_id is Null -> New Record
+        # 2. exist_id is Not Null BUT original_amount != exist_amount -> Updated Record
+        df_merged = df_trans.join(
+            existing_df, 
+            df_trans.transaction_id == existing_df.exist_id, 
+            how="left"
+        )
+        
+        df_new_trans = df_merged.filter(
+            col("exist_id").isNull() | 
+            (col("original_amount").cast("decimal(18,2)") != col("exist_amount").cast("decimal(18,2)"))
+        ).select(df_trans.columns) # Keep only original columns
     
     new_count = df_new_trans.count()
-    print(f"  -> New Records: {new_count}")
+    print(f"  -> Records to Process (New + Updates): {new_count}")
     
     if new_count == 0:
-        print("✅ No new transactions found. Pipeline finished.")
+        print("✅ No new or updated transactions found. Pipeline finished.")
         return
 
     # 3. Currency Conversion
     print("\n=== Converting Currencies to USD ===")
+
+    # --- UDF DEFINITION ---
+    # UPDATED: Removed caching of default 1.0 failure.
+    # If the API fails, it returns 1.0 but does NOT store it in `_cache`.
+    # This ensures that on the next run, it tries the API again instead of using the bad cached value.
+    def fetch_exchange_rate(currency, date_str):
+
+        if currency == "USD":
+            return 1.0
+
+        try:
+            API_KEY = os.getenv("API_KEY")
+            url = (
+                "http://api.currencylayer.com/historical"
+                f"?access_key={API_KEY}&date={date_str}&source=USD"
+            )
+
+            response = requests.get(url, timeout=5)
+            data = response.json()
+
+            if not data.get("success"):
+                raise ValueError("Currency API returned success=false")
+
+            quotes = data.get("quotes")
+            if not quotes:
+                raise ValueError("Missing quotes in API response")
+
+            key = f"USD{currency}"
+            rate = quotes.get(key)
+
+            if rate is None or float(rate) == 0:
+                raise ValueError(f"Missing rate for {key}")
+
+            # USD -> GBP → invert to get GBP -> USD
+            return 1.0 / float(rate)
+
+        except Exception as e:
+            print(f"[WARN] FX fallback used for {currency} on {date_str}: {e}")
+            return 1.0
+
+ 
+    convert_currency_udf = udf(fetch_exchange_rate, DoubleType())
     
-    # We apply UDF. Original amount is already decimal-corrected by Reader.
-    df_with_usd = df_new_trans.withColumn(
+    # Extract YYYY-MM-DD
+    df_with_date_str = df_new_trans.withColumn(
+        "api_date_str", 
+        substring(col("transaction_date").cast("string"), 1, 10)
+    )
+    
+    # Calculate amount_usd
+    df_final_trans = df_with_date_str.withColumn(
         "exchange_rate", 
-        convert_currency_udf(col("currency_code"), col("transaction_date").cast("string"))
+        convert_currency_udf(col("currency_code"), col("api_date_str"))
     ).withColumn(
         "original_amount", 
         col("original_amount").cast("decimal(18, 2)")
-    )
-    
-    df_final_trans = df_with_usd.withColumn(
+    ).withColumn(
         "amount_usd",
-        col("original_amount") * col("exchange_rate")
-    )
+        (col("original_amount") * col("exchange_rate")).cast("decimal(18, 2)")
+    ).drop("api_date_str")
 
-    # 4. Joins (Expanded columns)
+    # 4. Joins
     print("\n=== Building Join Tables ===")
 
-    # A. Transaction-Cards
     df_trans_cards_join = df_final_trans.alias("t").join(
         df_cards.alias("c"),
         col("t.card_id") == col("c.card_id"),
@@ -94,7 +135,6 @@ def transform_and_load_transactions(spark):
         col("c.card_status")
     )
     
-    # B. Transaction-Budgets
     df_trans_budgets_join = df_final_trans.alias("t").join(
         df_budgets.alias("b"),
         col("t.budget_id") == col("b.budget_id"),
