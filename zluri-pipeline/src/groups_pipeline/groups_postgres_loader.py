@@ -48,13 +48,12 @@ def init_db(spark):
     """
     print("\n--- [DB] Initializing Group Schemas ---")
 
-    # 1. GROUPS TABLE
+    # 1. GROUPS TABLE (Removed user_ids)
     execute_raw_sql(spark, f"""
     CREATE TABLE IF NOT EXISTS {TABLE_GROUPS} (
         group_id BIGINT,
         group_name TEXT NOT NULL,
         description TEXT,
-        user_ids TEXT, 
         parent_group_id BIGINT,
         status TEXT,
         created_at TIMESTAMP WITH TIME ZONE,
@@ -109,30 +108,26 @@ def write_to_db(df_groups, df_members, spark):
     # --- PART 1: GROUPS (UPSERT) ---
     print("\n--- Writing GROUPS (UPSERT) ---")
     
-    # Convert Array to String for display column
-    df_write_groups = df_groups
-    if "user_ids" in [f.name for f in df_groups.schema.fields]:
-        if "array" in dict(df_groups.dtypes)["user_ids"]:
-            df_write_groups = df_groups.withColumn("user_ids", concat_ws(",", col("user_ids")))
+    # No longer need to convert user_ids array to string since we are dropping it
+    df_write_groups = df_groups.drop("user_ids")
 
     try:
         df_write_groups.write.jdbc(DB_URL, TEMP_GROUPS, "overwrite", DB_PROPERTIES)
 
-        # Upsert with parent_group_id
+        # Upsert without user_ids
         upsert_sql = f"""
         INSERT INTO {TABLE_GROUPS} (
             group_id, group_name, description, 
-            user_ids, parent_group_id, status, created_at, updated_at
+            parent_group_id, status, created_at, updated_at
         )
         SELECT 
             group_id, group_name, description, 
-            user_ids, parent_group_id, status, created_at, updated_at
+            parent_group_id, status, created_at, updated_at
         FROM {TEMP_GROUPS}
         ON CONFLICT (group_id) 
         DO UPDATE SET 
             group_name  = EXCLUDED.group_name,
             description = EXCLUDED.description,
-            user_ids    = EXCLUDED.user_ids,
             parent_group_id = EXCLUDED.parent_group_id,
             status      = EXCLUDED.status,
             updated_at  = EXCLUDED.updated_at;

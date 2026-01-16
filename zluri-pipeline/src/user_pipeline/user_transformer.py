@@ -24,14 +24,9 @@ def transform_and_reconcile_users(spark):
         .filter(col("user_id").isNotNull() & col("role_id").isNotNull())
 
     # --- PREPARE USERS AGGREGATION (For Main Table) ---
-    # Logic: 
-    # 1. We group by User.
-    # 2. collect_set("role_name") gathers unique names.
-    # 3. If role_id was NULL (no role), role_name is NULL.
-    # 4. collect_set ignores NULLs -> returns empty set [].
-    # 5. concat_ws turns [] into empty string "".
+    # We aggregate to get unique users, but we won't pass role_names to the final DB table
     df_users_agg = df_exploded.groupBy("user_id", "user_name", "user_email", "created_at", "updated_at") \
-        .agg(concat_ws(", ", collect_set("role_name")).alias("role_names"))
+        .count().drop("count") # Simple distinct without role aggregation needed for the user table itself
 
     # --- USER RECONCILIATION LOGIC ---
     print("\n=== STEP 2: Reconciling Users (Status Calculation) ===")
@@ -49,12 +44,12 @@ def transform_and_reconcile_users(spark):
         )
     else:
         # Merge Logic
+        # FIX: Removed 'role_names' from this selection because it is no longer in the DB
         df_old = df_db.select(
             col("user_id").alias("db_id"),
             col("user_name").alias("db_name"),
             col("user_email").alias("db_email"),
             col("status").alias("db_status"),
-            col("role_names").alias("db_roles"),
             col("created_at").alias("db_created")
         ).alias("old")
 
@@ -62,6 +57,7 @@ def transform_and_reconcile_users(spark):
         df_joined = df_new.join(df_old, col("new.user_id") == col("old.db_id"), "full_outer")
 
         # --- KEY STATUS LOGIC HERE ---
+        # FIX: Removed role_names/db_roles from final selection
         df_final_users = df_joined.select(
             # ID: If new ID exists use it, otherwise use DB ID
             coalesce(col("new.user_id"), col("old.db_id")).alias("user_id"),
@@ -69,7 +65,6 @@ def transform_and_reconcile_users(spark):
             # Info: Prefer new info, fallback to old
             coalesce(col("new.user_name"), col("old.db_name")).alias("user_name"),
             coalesce(col("new.user_email"), col("old.db_email")).alias("user_email"),
-            coalesce(col("new.role_names"), col("old.db_roles")).alias("role_names"),
 
             # STATUS LOGIC:
             # If 'new.user_id' IS NOT NULL -> User is present in today's sync -> 'active'

@@ -69,24 +69,23 @@ def init_db(spark):
     print("\n--- [DB] Initializing Schemas ---")
 
     # A. USERS TABLE
+    # Removed role_names and group_names as requested
     execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_USERS} (
-            user_id BIGINT, -- Constraint added via helper
+            user_id BIGINT, 
             user_name TEXT NOT NULL,
             user_email TEXT NOT NULL,
-            role_names TEXT,
             status TEXT,
-            group_ids TEXT,
             created_at TIMESTAMP WITH TIME ZONE,
             updated_at TIMESTAMP WITH TIME ZONE
         )
     """)
     _ensure_pk_constraint(spark, TABLE_USERS, "(user_id)")
-
+    
     # B. ROLES TABLE
     execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_ROLES} (
-            role_id TEXT, -- Constraint added via helper
+            role_id TEXT, 
             role_name TEXT,
             role_desc TEXT
         )
@@ -99,7 +98,6 @@ def init_db(spark):
             user_id BIGINT,
             role_id TEXT,
             role_name TEXT
-            -- Composite PK added via helper
         )
     """)
     _ensure_pk_constraint(spark, TABLE_USER_ROLES, "(user_id, role_id)")
@@ -152,19 +150,23 @@ def load_user_pipeline(spark, df_users, df_roles, df_user_roles):
     try:
         # Cast User ID to Long for JDBC safety
         df_users_safe = df_users.withColumn("user_id", col("user_id").cast("long"))
-        df_users_safe.write.jdbc(DB_URL, "users_stage", "overwrite", DB_PROPERTIES)
         
-        # FIX: Added ::timestamptz cast to created_at and updated_at
+        # Select only required columns for staging
+        df_users_safe.select(
+            "user_id", "user_name", "user_email", 
+            "status", "created_at", "updated_at"
+        ).write.jdbc(DB_URL, "users_stage", "overwrite", DB_PROPERTIES)
+        
+        # Removed role_names and group_names from INSERT/UPDATE logic
         upsert_users = f"""
         INSERT INTO {TABLE_USERS} (
-            user_id, user_name, user_email, role_names, 
+            user_id, user_name, user_email,
             status, created_at, updated_at
         )
         SELECT 
             user_id, 
             user_name, 
             user_email, 
-            role_names, 
             status, 
             created_at::timestamptz, 
             updated_at::timestamptz 
@@ -172,7 +174,6 @@ def load_user_pipeline(spark, df_users, df_roles, df_user_roles):
         ON CONFLICT (user_id) DO UPDATE SET 
             user_name  = EXCLUDED.user_name,
             user_email = EXCLUDED.user_email,
-            role_names = EXCLUDED.role_names,
             status     = EXCLUDED.status,
             updated_at = EXCLUDED.updated_at::timestamptz;
         """
