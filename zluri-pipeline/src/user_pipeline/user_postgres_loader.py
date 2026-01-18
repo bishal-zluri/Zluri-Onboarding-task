@@ -5,7 +5,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- CONFIGURATION ---
-# Adjust path if needed
 POSTGRES_JAR = "/Users/bishalpb/onboarding task/jars/postgresql-42.7.8.jar"
 
 DB_URL = "jdbc:postgresql://localhost:5432/postgres"
@@ -24,7 +23,6 @@ TABLE_USER_ROLES = "user_roles"
 def execute_raw_sql(spark, sql_query):
     """
     Executes raw SQL (DDL/DML) using the JVM driver manager.
-    Includes explicit connection closing and error logging.
     """
     conn = None
     try:
@@ -32,47 +30,23 @@ def execute_raw_sql(spark, sql_query):
         conn = driver_manager.getConnection(DB_URL, DB_PROPERTIES["user"], DB_PROPERTIES["password"])
         stmt = conn.createStatement()
         stmt.execute(sql_query)
-        # print(f"   [SQL Executed]: {sql_query[:60].strip()}...")
     except Exception as e:
-        # We DO NOT print the error here anymore, because sometimes errors are expected 
-        # (like 'primary key already exists') and handled by the caller.
         raise e
     finally:
         if conn:
             conn.close()
 
-# --- 2. SELF-HEALING TABLE INITIALIZATION ---
-def _ensure_pk_constraint(spark, table_name, pk_definition):
-    """
-    Helper to attempt adding a Primary Key if it's missing.
-    """
-    try:
-        print(f"   -> Verifying constraints for '{table_name}'...")
-        alter_sql = f"ALTER TABLE {table_name} ADD PRIMARY KEY {pk_definition};"
-        execute_raw_sql(spark, alter_sql)
-        print(f"   -> Added missing Primary Key to {table_name}.")
-    except Exception as e:
-        err = str(e).lower()
-        if "multiple primary keys" in err or "already exists" in err:
-            pass # Constraint already exists, this is good.
-        elif "could not create unique index" in err:
-            print(f"❌ [CRITICAL] Duplicate data detected in '{table_name}'. Cannot enforce PK.")
-            print(f"   PLEASE RUN: TRUNCATE TABLE {table_name};")
-            raise e
-        else:
-            print(f"   [Warning] Constraint check skipped: {err[:50]}...")
-
+# --- 2. CLEANER TABLE INITIALIZATION ---
 def init_db(spark):
     """
-    Ensures all 3 tables exist with correct schemas and constraints.
+    Ensures all 3 tables exist. Primary Keys are defined directly in the CREATE statement.
     """
     print("\n--- [DB] Initializing Schemas ---")
 
-    # A. USERS TABLE
-    # Removed role_names and group_names as requested
+    # A. USERS TABLE (PK added inline)
     execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_USERS} (
-            user_id BIGINT, 
+            user_id BIGINT PRIMARY KEY, 
             user_name TEXT NOT NULL,
             user_email TEXT NOT NULL,
             status TEXT,
@@ -80,50 +54,39 @@ def init_db(spark):
             updated_at TIMESTAMP WITH TIME ZONE
         )
     """)
-    _ensure_pk_constraint(spark, TABLE_USERS, "(user_id)")
     
-    # B. ROLES TABLE
+    # B. ROLES TABLE (PK added inline)
     execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_ROLES} (
-            role_id TEXT, 
+            role_id TEXT PRIMARY KEY, 
             role_name TEXT,
             role_desc TEXT
         )
     """)
-    _ensure_pk_constraint(spark, TABLE_ROLES, "(role_id)")
 
-    # C. USER_ROLES (Link Table)
+    # C. USER_ROLES (Composite PK added at the end)
     execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_USER_ROLES} (
             user_id BIGINT,
             role_id TEXT,
-            role_name TEXT
+            role_name TEXT,
+            PRIMARY KEY (user_id, role_id)
         )
     """)
-    _ensure_pk_constraint(spark, TABLE_USER_ROLES, "(user_id, role_id)")
-
 
 def get_existing_db_data(spark):
-    """
-    Reads 'users' table for reconciliation.
-    """
     try:
         init_db(spark)
         df = spark.read.jdbc(url=DB_URL, table=TABLE_USERS, properties=DB_PROPERTIES)
-        # Cast to Long to match Spark types
         df = df.withColumn("user_id", col("user_id").cast("long"))
         return df
     except Exception as e:
         print(f"⚠️ Could not read existing users: {e}")
         return None
 
-
 # --- 3. MAIN PIPELINE LOADER ---
 def load_user_pipeline(spark, df_users, df_roles, df_user_roles):
-    """
-    Orchestrates the loading of Roles, Users, and User-Role mappings.
-    """
-    init_db(spark) # Double check schema before writing
+    init_db(spark) 
 
     # --- PART A: ROLES (UPSERT) ---
     print(f"\n--- Loading ROLES ({df_roles.count()} rows) ---")
@@ -144,20 +107,16 @@ def load_user_pipeline(spark, df_users, df_roles, df_user_roles):
     finally:
         execute_raw_sql(spark, "DROP TABLE IF EXISTS roles_stage")
 
-
     # --- PART B: USERS (UPSERT) ---
     print(f"\n--- Loading USERS ({df_users.count()} rows) ---")
     try:
-        # Cast User ID to Long for JDBC safety
         df_users_safe = df_users.withColumn("user_id", col("user_id").cast("long"))
         
-        # Select only required columns for staging
         df_users_safe.select(
             "user_id", "user_name", "user_email", 
             "status", "created_at", "updated_at"
         ).write.jdbc(DB_URL, "users_stage", "overwrite", DB_PROPERTIES)
         
-        # Removed role_names and group_names from INSERT/UPDATE logic
         upsert_users = f"""
         INSERT INTO {TABLE_USERS} (
             user_id, user_name, user_email,
@@ -181,25 +140,22 @@ def load_user_pipeline(spark, df_users, df_roles, df_user_roles):
         print("✅ Users Updated.")
     except Exception as e:
         print(f"❌ Failed to load Users: {e}")
-        raise e # Critical failure
+        raise e 
     finally:
         execute_raw_sql(spark, "DROP TABLE IF EXISTS users_stage")
 
-
-    # --- PART C: USER_ROLES (SYNC: DELETE + INSERT) ---
+    # --- PART C: USER_ROLES (SYNC) ---
     print(f"\n--- Loading USER_ROLES ({df_user_roles.count()} mappings) ---")
     try:
         df_ur_safe = df_user_roles.withColumn("user_id", col("user_id").cast("long"))
         df_ur_safe.write.jdbc(DB_URL, "user_roles_stage", "overwrite", DB_PROPERTIES)
         
-        # 1. Delete existing roles for users contained in this batch
         delete_sql = f"""
         DELETE FROM {TABLE_USER_ROLES} 
         WHERE user_id IN (SELECT user_id FROM user_roles_stage)
         """
         execute_raw_sql(spark, delete_sql)
         
-        # 2. Insert new mappings
         insert_sql = f"""
         INSERT INTO {TABLE_USER_ROLES} (user_id, role_id, role_name)
         SELECT user_id, role_id, role_name FROM user_roles_stage

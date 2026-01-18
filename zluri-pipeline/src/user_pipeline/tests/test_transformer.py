@@ -1,120 +1,184 @@
-# tests/test_transformer.py
-import sys
-import os
-from unittest.mock import patch
-from pyspark.sql.types import StructType, StructField, LongType, StringType, TimestampType, ArrayType
+import pytest
+from pyspark.sql import SparkSession
+from pyspark.sql.types import (
+    StructType, StructField, StringType, LongType, 
+    ArrayType, TimestampType
+)
+from unittest.mock import patch, MagicMock, call
 from datetime import datetime
 
-# --- BOILERPLATE ---
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+# Import the module to test
 from user_transformer import transform_and_reconcile_users
 
-# --- SCHEMAS ---
-def get_ingested_schema():
-    """Output of process_agents_data (Step 1)"""
-    return StructType([
+@pytest.fixture(scope="module")
+def spark():
+    """Create a Spark session for testing"""
+    spark = SparkSession.builder \
+        .appName("TestUsersTransformer") \
+        .master("local[2]") \
+        .getOrCreate()
+    yield spark
+    spark.stop()
+
+@pytest.fixture
+def sample_exploded_df(spark):
+    """Create sample exploded user data"""
+    schema = StructType([
         StructField("user_id", LongType(), True),
         StructField("user_name", StringType(), True),
         StructField("user_email", StringType(), True),
-        StructField("user_created_at", StringType(), True),
-        StructField("user_updated_at", StringType(), True),
-        StructField("role_names", ArrayType(StringType()), True)
+        StructField("created_at", TimestampType(), True),
+        StructField("updated_at", TimestampType(), True),
+        StructField("role_id", StringType(), True),
+        StructField("role_name", StringType(), True),
+        StructField("role_desc", StringType(), True)
     ])
+    
+    data = [
+        (1, "User One", "user1@test.com", datetime(2024, 1, 1), datetime(2024, 1, 2), "role1", "Admin", "Admin role"),
+        (1, "User One", "user1@test.com", datetime(2024, 1, 1), datetime(2024, 1, 2), "role2", "Manager", "Manager role"),
+        (2, "User Two", "user2@test.com", datetime(2024, 1, 1), datetime(2024, 1, 2), "role3", "User", "User role"),
+        (3, "User Three", "user3@test.com", datetime(2024, 1, 1), datetime(2024, 1, 2), None, None, None)
+    ]
+    return spark.createDataFrame(data, schema)
 
-def get_db_schema():
-    """Simulates the Postgres 'users' table"""
-    return StructType([
+@pytest.fixture
+def sample_db_data(spark):
+    """Create sample existing database data"""
+    schema = StructType([
         StructField("user_id", LongType(), True),
         StructField("user_name", StringType(), True),
         StructField("user_email", StringType(), True),
         StructField("status", StringType(), True),
-        StructField("created_at", TimestampType(), True),
-        StructField("updated_at", TimestampType(), True),
-        StructField("role_names", StringType(), True)
+        StructField("created_at", TimestampType(), True)
     ])
-
-# --- TESTS ---
-
-@patch("user_transformer.write_to_db_and_show")
-@patch("user_transformer.get_existing_db_data")
-@patch("user_transformer.process_agents_data")
-def test_initial_load(mock_process, mock_get_db, mock_write, spark):
-    """
-    Scenario: DB is empty.
-    Expected: All users from S3 are written as 'active'.
-    """
-    # 1. Mock S3 Data (Matches your JSON sample data types)
-    df_incoming = spark.createDataFrame([
-        (
-            69010941952, 
-            "H1 SaaS", 
-            "saas@h1.co", 
-            "2021-08-13T11:50:18Z", 
-            "2025-03-26T18:19:00Z", 
-            ["Support Agent"]
-        )
-    ], get_ingested_schema())
-    mock_process.return_value = df_incoming
-
-    # 2. Mock DB (None for first run)
-    mock_get_db.return_value = None
-
-    # 3. Execute
-    transform_and_reconcile_users(spark)
-
-    # 4. Verify
-    args, _ = mock_write.call_args
-    df_written = args[0]
     
-    row = df_written.first()
-    assert row['user_id'] == 69010941952
-    assert row['status'] == 'active'
-    # Check Array->String conversion
-    assert row['role_names'] == "Support Agent"
-    # Check Timestamp casting
-    assert isinstance(row['created_at'], datetime)
-    assert row['created_at'].year == 2021
+    data = [
+        (1, "User One Old", "user1@old.com", "active", datetime(2024, 1, 1)),
+        (4, "User Four", "user4@test.com", "active", datetime(2024, 1, 1)) 
+    ]
+    return spark.createDataFrame(data, schema)
 
-@patch("user_transformer.write_to_db_and_show")
-@patch("user_transformer.get_existing_db_data")
-@patch("user_transformer.process_agents_data")
-def test_reconciliation_deleted_user(mock_process, mock_get_db, mock_write, spark):
-    """
-    Scenario: User 69010941952 exists in DB but is missing from S3.
-    Expected: Status becomes 'inactive'.
-    """
-    # 1. Mock S3 (Empty or different user)
-    df_incoming = spark.createDataFrame([
-        (999, "New Guy", "new@h1.co", "2024-01-01", "2024-01-01", ["Admin"])
-    ], get_ingested_schema())
-    mock_process.return_value = df_incoming
-
-    # 2. Mock DB (Original User is Active)
-    df_db = spark.createDataFrame([
-        (
-            69010941952, 
-            "H1 SaaS", 
-            "saas@h1.co", 
-            "active", 
-            datetime(2021, 8, 13), 
-            datetime(2025, 3, 26), 
-            "Support Agent"
-        )
-    ], get_db_schema())
-    mock_get_db.return_value = df_db
-
-    # 3. Execute
-    transform_and_reconcile_users(spark)
-
-    # 4. Verify
-    args, _ = mock_write.call_args
-    df_final = args[0]
+class TestTransformAndReconcileUsers:
     
-    # Original user -> Inactive
-    old_user = df_final.filter(df_final.user_id == 69010941952).first()
-    assert old_user['status'] == 'inactive'
+    @patch('user_transformer.process_agents_data')
+    @patch('user_transformer.get_existing_db_data')
+    @patch('user_transformer.load_user_pipeline')
+    def test_transform_no_new_data(self, mock_load, mock_get_db, mock_process, spark, capsys):
+        mock_process.return_value = None
+        transform_and_reconcile_users(spark)
+        captured = capsys.readouterr()
+        assert "⚠️ No new data found. Skipping." in captured.out
+        mock_load.assert_not_called()
     
-    # New user -> Active
-    new_user = df_final.filter(df_final.user_id == 999).first()
-    assert new_user['status'] == 'active'
+    @patch('user_transformer.process_agents_data')
+    @patch('user_transformer.get_existing_db_data')
+    @patch('user_transformer.load_user_pipeline')
+    def test_transform_with_empty_dataframe(self, mock_load, mock_get_db, mock_process, spark, capsys):
+        schema = StructType([
+            StructField("user_id", LongType(), True),
+            StructField("user_name", StringType(), True)
+        ])
+        empty_df = spark.createDataFrame([], schema)
+        mock_process.return_value = empty_df
+        transform_and_reconcile_users(spark)
+        captured = capsys.readouterr()
+        assert "⚠️ No new data found. Skipping." in captured.out
+        mock_load.assert_not_called()
+    
+    @patch('user_transformer.process_agents_data')
+    @patch('user_transformer.get_existing_db_data')
+    @patch('user_transformer.load_user_pipeline')
+    def test_transform_initial_load(self, mock_load, mock_get_db, mock_process, spark, sample_exploded_df, capsys):
+        mock_process.return_value = sample_exploded_df
+        mock_get_db.return_value = None
+        
+        transform_and_reconcile_users(spark)
+        
+        captured = capsys.readouterr()
+        assert "Initial Load. Setting all users to 'active'." in captured.out
+        assert mock_load.called
+        call_args = mock_load.call_args
+        df_users = call_args[0][1]
+        active_count = df_users.filter(df_users.status == "active").count()
+        assert active_count == 3 
+
+    @patch('user_transformer.process_agents_data')
+    @patch('user_transformer.get_existing_db_data')
+    @patch('user_transformer.load_user_pipeline')
+    def test_transform_with_reconciliation(self, mock_load, mock_get_db, mock_process, spark, sample_exploded_df, sample_db_data, capsys):
+        mock_process.return_value = sample_exploded_df
+        mock_get_db.return_value = sample_db_data
+        
+        transform_and_reconcile_users(spark)
+        
+        captured = capsys.readouterr()
+        assert "Status Summary" in captured.out
+        
+        call_args = mock_load.call_args
+        df_users = call_args[0][1]
+        users = df_users.collect()
+        user_dict = {row.user_id: row for row in users}
+        
+        assert user_dict[1].status == "active"
+        assert user_dict[4].status == "inactive"
+        assert user_dict[2].status == "active"
+        
+    @patch('user_transformer.process_agents_data')
+    @patch('user_transformer.get_existing_db_data')
+    @patch('user_transformer.load_user_pipeline')
+    def test_transform_roles_table_generation(self, mock_load, mock_get_db, mock_process, spark, sample_exploded_df):
+        mock_process.return_value = sample_exploded_df
+        mock_get_db.return_value = None
+        transform_and_reconcile_users(spark)
+        call_args = mock_load.call_args
+        df_roles = call_args[0][2]
+        assert df_roles.count() == 3
+        
+    @patch('user_transformer.process_agents_data')
+    @patch('user_transformer.get_existing_db_data')
+    @patch('user_transformer.load_user_pipeline')
+    def test_transform_filters_null_user_ids(self, mock_load, mock_get_db, mock_process, spark, sample_exploded_df):
+        """Test that null user_ids are filtered out"""
+        schema = sample_exploded_df.schema
+        # Row with None user_id
+        null_data = [(None, "Null User", "null@test.com", datetime(2024, 1, 1), datetime(2024, 1, 2), None, None, None)]
+        null_df = spark.createDataFrame(null_data, schema)
+        combined_df = sample_exploded_df.union(null_df)
+        
+        mock_process.return_value = combined_df
+        mock_get_db.return_value = None
+        
+        transform_and_reconcile_users(spark)
+        
+        call_args = mock_load.call_args
+        df_users = call_args[0][1]
+        
+        # Verify null user_ids are filtered
+        null_count = df_users.filter(df_users.user_id.isNull()).count()
+        assert null_count == 0
+
+    @patch('user_transformer.process_agents_data')
+    @patch('user_transformer.get_existing_db_data')
+    @patch('user_transformer.load_user_pipeline')
+    def test_transform_handles_empty_db(self, mock_load, mock_get_db, mock_process, spark, sample_exploded_df):
+        """Test transformation when database returns empty dataframe"""
+        mock_process.return_value = sample_exploded_df
+        
+        # FIX: Added required columns (user_email, created_at) to avoid AnalysisException
+        schema = StructType([
+            StructField("user_id", LongType(), True),
+            StructField("user_name", StringType(), True),
+            StructField("user_email", StringType(), True),
+            StructField("status", StringType(), True),
+            StructField("created_at", TimestampType(), True)
+        ])
+        empty_db_df = spark.createDataFrame([], schema)
+        mock_get_db.return_value = empty_db_df
+        
+        transform_and_reconcile_users(spark)
+        
+        call_args = mock_load.call_args
+        df_users = call_args[0][1]
+        active_count = df_users.filter(df_users.status == "active").count()
+        assert active_count == 3
