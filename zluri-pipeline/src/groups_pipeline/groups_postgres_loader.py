@@ -1,5 +1,5 @@
 import os
-from pyspark.sql.functions import col, concat_ws
+from pyspark.sql.functions import col
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -35,23 +35,16 @@ def execute_raw_sql(spark, sql_query):
     finally:
         if conn: conn.close()
 
-def _ensure_pk(spark, table, pk_col):
-    try:
-        execute_raw_sql(spark, f"ALTER TABLE {table} ADD PRIMARY KEY {pk_col};")
-        print(f"   -> Added Primary Key to {table}.")
-    except Exception:
-        pass 
-
 def init_db(spark):
     """
-    Initializes Groups and GroupMembers tables.
+    Initializes Groups and GroupMembers tables with inline Primary Keys.
     """
     print("\n--- [DB] Initializing Group Schemas ---")
 
-    # 1. GROUPS TABLE (Removed user_ids)
+    # 1. GROUPS TABLE (Inline PK)
     execute_raw_sql(spark, f"""
     CREATE TABLE IF NOT EXISTS {TABLE_GROUPS} (
-        group_id BIGINT,
+        group_id BIGINT PRIMARY KEY,
         group_name TEXT NOT NULL,
         description TEXT,
         parent_group_id BIGINT,
@@ -60,24 +53,22 @@ def init_db(spark):
         updated_at TIMESTAMP WITH TIME ZONE
     );
     """)
-    _ensure_pk(spark, TABLE_GROUPS, "(group_id)")
     
-    # Schema Evolution
+    # Schema Evolution (Safe to keep for backward compatibility)
     try:
         execute_raw_sql(spark, f"ALTER TABLE {TABLE_GROUPS} ADD COLUMN parent_group_id BIGINT")
     except Exception:
         pass
 
-    # 2. GROUP_MEMBERS TABLE
+    # 2. GROUP_MEMBERS TABLE (Composite PK at end)
     execute_raw_sql(spark, f"""
     CREATE TABLE IF NOT EXISTS {TABLE_GROUP_MEMBERS} (
         group_id BIGINT,
         user_id BIGINT,
-        user_status TEXT
+        user_status TEXT,
+        PRIMARY KEY (group_id, user_id)
     );
     """)
-    _ensure_pk(spark, TABLE_GROUP_MEMBERS, "(group_id, user_id)")
-
 
 def get_db_table(spark, table_name):
     """

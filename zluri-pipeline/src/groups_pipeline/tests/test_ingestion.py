@@ -1,126 +1,314 @@
-import sys
-import os
 import pytest
-from unittest.mock import patch
-from pyspark.sql.types import StructType, StructField, LongType, StringType, ArrayType, BooleanType
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, StringType, LongType, ArrayType
+from unittest.mock import patch, MagicMock
 
-# --- BOILERPLATE TO FIND SOURCE FILES ---
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from s3_reader_groups import (
+    read_s3_data,
+    process_groups_data,
+    ENTITY_GROUPS
+)
 
-from s3_reader_groups import process_groups_data, read_s3_data
 
-@patch("s3_reader_groups.read_s3_data")
-def test_process_groups_alternative_schema(mock_read_s3, spark):
-    """Test the 'users' object list scenario (e.g. from a different API version)"""
-    # Schema matching a structure like: [{"id": 1}, {"id": 2}]
-    schema_users = StructType([
-        StructField("id", LongType(), True),
-        StructField("users", ArrayType(StructType([StructField("id", LongType(), True)])), True)
-    ])
+@pytest.fixture(scope="module")
+def spark():
+    """Create a Spark session for testing"""
+    spark = SparkSession.builder \
+        .appName("TestGroupsExtractor") \
+        .master("local[2]") \
+        .getOrCreate()
+    yield spark
+    spark.stop()
+
+
+class TestReadS3Data:
+    """Tests for read_s3_data function"""
     
-    # Data: Group 1 has users with IDs 101 and 102
-    data = [(1, [{"id": 101}, {"id": 102}])]
-    mock_read_s3.return_value = spark.createDataFrame(data, schema_users)
-
-    df_result = process_groups_data(spark)
+    def test_read_s3_data_no_files(self, spark, capsys):
+        """Test read_s3_data when no files are found"""
+        result = read_s3_data(spark, "non_existent_folder")
+        captured = capsys.readouterr()
+        
+        assert result is None
+        assert "[!] No data found for entity: non_existent_folder" in captured.out
     
-    # Assert it correctly extracted [101, 102]
-    row = df_result.first()
-    assert row["user_ids"] == [101, 102]
-
-@patch("s3_reader_groups.read_s3_data")
-def test_process_groups_no_ids(mock_read_s3, spark):
-    """Test the 'else' block where no IDs are found"""
-    schema_empty = StructType([StructField("id", LongType(), True)])
-    mock_read_s3.return_value = spark.createDataFrame([(1,)], schema_empty)
-
-    df_result = process_groups_data(spark)
+    @patch('s3_reader_groups.read_s3_data')
+    def test_read_s3_data_with_json_files(self, mock_read, spark):
+        """Test read_s3_data successfully reads JSON files"""
+        schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("name", StringType(), True)
+        ])
+        mock_df = spark.createDataFrame([(1, "test")], schema)
+        mock_read.return_value = mock_df
+        
+        result = mock_read(spark, "test_folder")
+        assert result is not None
+        assert result.count() == 1
     
-    # Assert it created an empty array, not null
-    row = df_result.first()
-    assert row["user_ids"] == []
+    @patch('s3_reader_groups.read_s3_data')
+    def test_read_s3_data_union_multiple_files(self, mock_read, spark):
+        """Test read_s3_data unions data from multiple files"""
+        schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("name", StringType(), True)
+        ])
+        mock_df = spark.createDataFrame([
+            (1, "group1"),
+            (2, "group2"),
+            (3, "group3")
+        ], schema)
+        mock_read.return_value = mock_df
+        
+        result = mock_read(spark, "test_folder")
+        assert result is not None
+        assert result.count() == 3
 
 
-# Patching Spark's internal read API, NOT the function itself
-@patch("pyspark.sql.DataFrameReader.json")
-def test_read_s3_data_internals(mock_json_read, spark):
-    """
-    Executes the actual 'read_s3_data' function logic 
-    but mocks the final 'spark.read.json' call.
-    """
-    # 1. Setup mock return
-    mock_df = spark.createDataFrame([(1,)], ["id"])
-    mock_json_read.return_value = mock_df
-
-    # 2. CALL THE REAL FUNCTION (No patch on read_s3_data)
-    result = read_s3_data(spark, "test_folder")
-
-    # 3. Assertions
-    assert result is not None
-    assert result.count() == 1
-    # Verify the code actually tried to read JSON
-    assert mock_json_read.called
-
-
-def get_raw_json_schema():
-    """Matches the exact structure of the provided raw JSON."""
-    return StructType([
-        StructField("id", LongType(), True),
-        StructField("name", StringType(), True),
-        StructField("description", StringType(), True),
-        StructField("agent_ids", ArrayType(LongType()), True), # Raw is Array of Longs
-        StructField("created_at", StringType(), True),
-        StructField("updated_at", StringType(), True),
-        StructField("type", StringType(), True),
-        # Add other fields if necessary for strict schema, but these are the core ones used
-    ])
-
-@patch("s3_reader_groups.read_s3_data")
-def test_process_groups_ingestion(mock_read_s3, spark):
-    """
-    Test that process_groups_data correctly handles the specific JSON structure provided.
-    Key check: 'agent_ids' must be copied to 'user_ids'.
-    """
-    # 1. Prepare Mock Data (Subset of your raw JSON)
-    data = [
-        (
-            69000630118, 
-            "DevOps", 
-            "Kicks off devops assignment workflow", 
-            [69013042475, 69030996455], 
-            "2022-02-09T17:14:12Z", 
-            "2022-02-21T15:31:54Z",
-            "support_agent_group"
-        ),
-        (
-            69000521031, 
-            "H1 IT Support", 
-            "Internal H1 IT support team.", 
-            [], # Empty list to test edge case
-            "2021-08-13T17:17:00Z", 
-            "2021-12-13T14:09:44Z",
-            "support_agent_group"
-        )
-    ]
-    df_raw = spark.createDataFrame(data, get_raw_json_schema())
+class TestProcessGroupsData:
+    """Tests for process_groups_data function"""
     
-    # Mock return
-    mock_read_s3.return_value = df_raw
+    @patch('s3_reader_groups.read_s3_data')
+    def test_process_groups_data_no_data(self, mock_read, spark):
+        """Test process_groups_data when no data is found"""
+        mock_read.return_value = None
+        result = process_groups_data(spark)
+        assert result is None
+    
+    @patch('s3_reader_groups.read_s3_data')
+    def test_process_groups_data_with_results_array(self, mock_read, spark):
+        """Test process_groups_data with results array wrapper"""
+        schema = StructType([
+            StructField("results", ArrayType(StructType([
+                StructField("id", LongType(), True),
+                StructField("name", StringType(), True),
+                StructField("description", StringType(), True),
+                StructField("agent_ids", ArrayType(LongType()), True),
+                StructField("parent_group_id", LongType(), True),
+                StructField("created_at", StringType(), True),
+                StructField("updated_at", StringType(), True)
+            ])))
+        ])
+        
+        data = [([
+            (1, "Group 1", "First group", [1, 2], None, "2024-01-01", "2024-01-02"),
+            (2, "Group 2", "Second group", [3, 4], 1, "2024-01-01", "2024-01-02")
+        ],)]
+        
+        groups_df = spark.createDataFrame(data, schema)
+        mock_read.return_value = groups_df
+        
+        result = process_groups_data(spark)
+        
+        assert result is not None
+        assert result.count() == 2
+        assert "user_ids" in result.columns
+        assert "id" in result.columns
+        assert "name" in result.columns
+    
+    @patch('s3_reader_groups.read_s3_data')
+    def test_process_groups_data_agent_ids_to_user_ids(self, mock_read, spark):
+        """Test that agent_ids column is mapped to user_ids"""
+        schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("name", StringType(), True),
+            StructField("description", StringType(), True),
+            StructField("agent_ids", ArrayType(LongType()), True),
+            StructField("parent_group_id", LongType(), True),
+            StructField("created_at", StringType(), True),
+            StructField("updated_at", StringType(), True)
+        ])
+        
+        data = [(1, "Group 1", "Test", [1, 2, 3], None, "2024-01-01", "2024-01-02")]
+        groups_df = spark.createDataFrame(data, schema)
+        mock_read.return_value = groups_df
+        
+        result = process_groups_data(spark)
+        
+        assert "user_ids" in result.columns
+        row = result.collect()[0]
+        assert row.user_ids == [1, 2, 3]
+    
+    @patch('s3_reader_groups.read_s3_data')
+    def test_process_groups_data_users_column(self, mock_read, spark):
+        """Test that users.id column is mapped to user_ids"""
+        schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("name", StringType(), True),
+            StructField("description", StringType(), True),
+            StructField("users", StructType([
+                StructField("id", ArrayType(LongType()), True)
+            ])),
+            StructField("parent_group_id", LongType(), True),
+            StructField("created_at", StringType(), True),
+            StructField("updated_at", StringType(), True)
+        ])
+        
+        data = [(1, "Group 1", "Test", ([10, 20],), None, "2024-01-01", "2024-01-02")]
+        groups_df = spark.createDataFrame(data, schema)
+        mock_read.return_value = groups_df
+        
+        result = process_groups_data(spark)
+        
+        assert "user_ids" in result.columns
+        row = result.collect()[0]
+        assert row.user_ids == [10, 20]
+    
+    @patch('s3_reader_groups.read_s3_data')
+    def test_process_groups_data_members_column(self, mock_read, spark):
+        """Test that members.id column is mapped to user_ids"""
+        schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("name", StringType(), True),
+            StructField("description", StringType(), True),
+            StructField("members", StructType([
+                StructField("id", ArrayType(LongType()), True)
+            ])),
+            StructField("parent_group_id", LongType(), True),
+            StructField("created_at", StringType(), True),
+            StructField("updated_at", StringType(), True)
+        ])
+        
+        data = [(1, "Group 1", "Test", ([5, 6, 7],), None, "2024-01-01", "2024-01-02")]
+        groups_df = spark.createDataFrame(data, schema)
+        mock_read.return_value = groups_df
+        
+        result = process_groups_data(spark)
+        
+        assert "user_ids" in result.columns
+        row = result.collect()[0]
+        assert row.user_ids == [5, 6, 7]
+    
+    @patch('s3_reader_groups.read_s3_data')
+    def test_process_groups_data_null_user_ids(self, mock_read, spark):
+        """Test that null user_ids are converted to empty array"""
+        schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("name", StringType(), True),
+            StructField("description", StringType(), True),
+            StructField("parent_group_id", LongType(), True),
+            StructField("created_at", StringType(), True),
+            StructField("updated_at", StringType(), True)
+        ])
+        
+        data = [(1, "Group 1", "Test", None, "2024-01-01", "2024-01-02")]
+        groups_df = spark.createDataFrame(data, schema)
+        mock_read.return_value = groups_df
+        
+        result = process_groups_data(spark)
+        
+        assert "user_ids" in result.columns
+        row = result.collect()[0]
+        assert row.user_ids == []
+    
+    @patch('s3_reader_groups.read_s3_data')
+    def test_process_groups_data_missing_parent_group_id(self, mock_read, spark, capsys):
+        """Test that missing parent_group_id is defaulted to null"""
+        schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("name", StringType(), True),
+            StructField("description", StringType(), True),
+            StructField("user_ids", ArrayType(LongType()), True),
+            StructField("created_at", StringType(), True),
+            StructField("updated_at", StringType(), True)
+        ])
+        
+        data = [(1, "Group 1", "Test", [1], "2024-01-01", "2024-01-02")]
+        groups_df = spark.createDataFrame(data, schema)
+        mock_read.return_value = groups_df
+        
+        result = process_groups_data(spark)
+        
+        captured = capsys.readouterr()
+        assert "'parent_group_id' missing in source" in captured.out
+        assert "parent_group_id" in result.columns
+        
+        row = result.collect()[0]
+        assert row.parent_group_id is None
+    
+    @patch('s3_reader_groups.read_s3_data')
+    def test_process_groups_data_with_parent_group_id(self, mock_read, spark):
+        """Test that parent_group_id is preserved when present"""
+        schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("name", StringType(), True),
+            StructField("description", StringType(), True),
+            StructField("user_ids", ArrayType(LongType()), True),
+            StructField("parent_group_id", LongType(), True),
+            StructField("created_at", StringType(), True),
+            StructField("updated_at", StringType(), True)
+        ])
+        
+        data = [
+            (1, "Parent Group", "Top level", [], None, "2024-01-01", "2024-01-02"),
+            (2, "Child Group", "Child of 1", [1], 1, "2024-01-01", "2024-01-02")
+        ]
+        groups_df = spark.createDataFrame(data, schema)
+        mock_read.return_value = groups_df
+        
+        result = process_groups_data(spark)
+        
+        rows = result.collect()
+        parent = [r for r in rows if r.id == 1][0]
+        child = [r for r in rows if r.id == 2][0]
+        
+        assert parent.parent_group_id is None
+        assert child.parent_group_id == 1
+    
+    @patch('s3_reader_groups.read_s3_data')
+    def test_process_groups_data_empty_user_ids_array(self, mock_read, spark):
+        """Test that empty user_ids array is preserved"""
+        schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("name", StringType(), True),
+            StructField("description", StringType(), True),
+            StructField("agent_ids", ArrayType(LongType()), True),
+            StructField("parent_group_id", LongType(), True),
+            StructField("created_at", StringType(), True),
+            StructField("updated_at", StringType(), True)
+        ])
+        
+        data = [(1, "Empty Group", "No members", [], None, "2024-01-01", "2024-01-02")]
+        groups_df = spark.createDataFrame(data, schema)
+        mock_read.return_value = groups_df
+        
+        result = process_groups_data(spark)
+        
+        row = result.collect()[0]
+        assert row.user_ids == []
+    
+    @patch('s3_reader_groups.read_s3_data')
+    def test_process_groups_data_multiple_groups_various_scenarios(self, mock_read, spark):
+        """Test processing multiple groups with various scenarios"""
+        schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("name", StringType(), True),
+            StructField("description", StringType(), True),
+            StructField("agent_ids", ArrayType(LongType()), True),
+            StructField("parent_group_id", LongType(), True),
+            StructField("created_at", StringType(), True),
+            StructField("updated_at", StringType(), True)
+        ])
+        
+        data = [
+            (1, "Group A", "Has members", [1, 2, 3], None, "2024-01-01", "2024-01-02"),
+            (2, "Group B", "No members", [], None, "2024-01-01", "2024-01-02"),
+            (3, "Group C", "Child group", [4], 1, "2024-01-01", "2024-01-02")
+        ]
+        groups_df = spark.createDataFrame(data, schema)
+        mock_read.return_value = groups_df
+        
+        result = process_groups_data(spark)
+        
+        assert result.count() == 3
+        
+        rows = {r.id: r for r in result.collect()}
+        
+        assert rows[1].user_ids == [1, 2, 3]
+        assert rows[2].user_ids == []
+        assert rows[3].user_ids == [4]
+        assert rows[3].parent_group_id == 1
 
-    # 2. Execute
-    df_result = process_groups_data(spark)
 
-    # 3. Assertions
-    assert df_result is not None
-    assert df_result.count() == 2
-    
-    # Check Column Mapping (agent_ids -> user_ids)
-    cols = df_result.columns
-    assert "user_ids" in cols
-    
-    # Check Content
-    row_devops = df_result.filter(df_result.id == 69000630118).first()
-    assert row_devops['user_ids'] == [69013042475, 69030996455]
-    
-    row_empty = df_result.filter(df_result.id == 69000521031).first()
-    assert row_empty['user_ids'] == []
+if __name__ == "__main__":
+    pytest.main([__file__, "-v", "--cov=s3_reader_groups", "--cov-report=term-missing"])
