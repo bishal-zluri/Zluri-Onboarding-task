@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import input_file_name, col, explode, array, lit, when, pow, coalesce
+from pyspark.sql.functions import input_file_name, col, explode, array, lit, when, pow, coalesce, struct
 from functools import reduce
 
 # --- 1. CONFIGURATION ---
@@ -95,7 +95,8 @@ def process_transactions_schema(spark):
     if "results" in df_trans_raw.columns:
         df_exploded = df_trans_raw.select(explode(col("results")).alias("t"))
     else:
-        df_exploded = df_trans_raw.select(col("*").alias("t"))
+        # --- FIX: Use struct() to wrap columns before aliasing ---
+        df_exploded = df_trans_raw.select(struct(col("*")).alias("t"))
     
     cols = df_exploded.select("t.*").columns
     
@@ -106,8 +107,6 @@ def process_transactions_schema(spark):
             return lit(None).alias(alias_name)
 
     # Logic to handle minor units (cents) vs major units (dollars)
-    # Formula: amount * 10^(-exponent)
-    # Example: 12559 * 10^-2 = 125.59
     amount_col = (col("t.currencyData.originalCurrencyAmount").cast("double") * \
                   pow(lit(10), -col("t.currencyData.exponent").cast("int"))).alias("original_amount")
 
@@ -117,12 +116,8 @@ def process_transactions_schema(spark):
         get_col("transactionDate", "transaction_date"),
         get_col("occurredTime", "occurred_time"), 
         get_col("merchantName", "merchant_name"),
-        
-        # Corrected Amount Logic
         amount_col,
         col("t.currencyData.originalCurrencyCode").alias("currency_code"),
-
-        # Foreign Keys
         get_col("cardId", "card_id"),
         get_col("budgetId", "budget_id")
     )

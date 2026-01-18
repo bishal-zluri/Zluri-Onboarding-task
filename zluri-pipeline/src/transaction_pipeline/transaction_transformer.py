@@ -1,15 +1,141 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit, when, coalesce, udf, substring
-from pyspark.sql.types import DoubleType, DecimalType
+from pyspark.sql.functions import col, lit, when, coalesce, udf, substring, broadcast
+from pyspark.sql.types import DoubleType, DecimalType, MapType, StringType
 import os
 import requests
 from dotenv import load_dotenv
+import pickle
+import time
+from datetime import datetime
 
 load_dotenv()
 
 # Imports
 from s3_reader_transaction import process_transactions_schema, process_cards_data, process_budgets_data
 from transaction_postgres_loader import load_transaction_pipeline, get_existing_transaction_ids, POSTGRES_JAR
+
+# Cache configuration
+CACHE_FILE = "fx_rate_cache.pkl"
+
+def load_cache():
+    """Load cached exchange rates from disk"""
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, 'rb') as f:
+                cache = pickle.load(f)
+                print(f"[CACHE] Loaded {len(cache)} cached exchange rates")
+                return cache
+        except Exception as e:
+            print(f"[CACHE] Error loading cache: {e}")
+    return {}
+
+def save_cache(cache):
+    """Save exchange rates to disk cache"""
+    try:
+        with open(CACHE_FILE, 'wb') as f:
+            pickle.dump(cache, f)
+        print(f"[CACHE] Saved {len(cache)} exchange rates to cache")
+    except Exception as e:
+        print(f"[CACHE] Error saving cache: {e}")
+
+def fetch_exchange_rates_batch(currency_date_pairs):
+    """
+    Fetch exchange rates for multiple currency-date pairs in batch.
+    Uses caching to minimize API calls.
+    
+    Args:
+        currency_date_pairs: List of (currency, date_str) tuples
+        
+    Returns:
+        Dictionary mapping "CURRENCY_DATE" -> rate
+    """
+    cache = load_cache()
+    rate_map = {}
+    api_calls_made = 0
+    cache_hits = 0
+    
+    API_KEY = os.getenv("API_KEY")
+    
+    for currency, date_str in currency_date_pairs:
+        if currency == "USD":
+            cache_key = f"USD_{date_str}"
+            rate_map[cache_key] = 1.0
+            continue
+            
+        cache_key = f"{currency}_{date_str}"
+        
+        # Check cache first
+        if cache_key in cache:
+            rate_map[cache_key] = cache[cache_key]
+            cache_hits += 1
+            print(f"[CACHE HIT] {currency} on {date_str}: {cache[cache_key]:.6f}")
+            continue
+        
+        # Not in cache, fetch from API
+        try:
+            url = f"https://api.exchangerate.host/historical?access_key={API_KEY}&date={date_str}"
+            
+            print(f"[API CALL {api_calls_made + 1}] Fetching {currency} for {date_str}...")
+            response = requests.get(url, timeout=10)
+            
+            if response.status_code == 429:
+                print(f"[ERROR] Rate limit reached. Processed {api_calls_made} API calls.")
+                print(f"[INFO] Using fallback rate 1.0 for {currency} on {date_str}")
+                rate_map[cache_key] = 1.0
+                cache[cache_key] = 1.0
+                continue
+            
+            data = response.json()
+
+            if not data.get("success"):
+                error_info = data.get("error", {})
+                print(f"[WARN] API failed for {currency} on {date_str}: {error_info}")
+                rate_map[cache_key] = 1.0
+                cache[cache_key] = 1.0
+                continue
+
+            quotes = data.get("quotes")
+            if not quotes:
+                print(f"[WARN] Missing quotes for {currency} on {date_str}")
+                rate_map[cache_key] = 1.0
+                cache[cache_key] = 1.0
+                continue
+
+            key = f"USD{currency}"
+            rate = quotes.get(key)
+
+            if rate is None or float(rate) == 0:
+                print(f"[WARN] Missing rate for {key}")
+                rate_map[cache_key] = 1.0
+                cache[cache_key] = 1.0
+                continue
+
+            # Convert USD->XXX to XXX->USD
+            converted_rate = 1.0 / float(rate)
+            rate_map[cache_key] = converted_rate
+            cache[cache_key] = converted_rate
+            
+            print(f"[SUCCESS] {currency} on {date_str}: {converted_rate:.6f}")
+            api_calls_made += 1
+            
+            # Add delay between API calls to avoid rate limiting
+            if api_calls_made < len(currency_date_pairs):
+                time.sleep(0.5)  # 500ms delay between calls
+
+        except Exception as e:
+            print(f"[ERROR] Exception fetching {currency} on {date_str}: {e}")
+            rate_map[cache_key] = 1.0
+            cache[cache_key] = 1.0
+    
+    # Save updated cache
+    save_cache(cache)
+    
+    print(f"\n=== Exchange Rate Fetch Summary ===")
+    print(f"Cache Hits: {cache_hits}")
+    print(f"API Calls Made: {api_calls_made}")
+    print(f"Total Rates Fetched: {len(rate_map)}")
+    
+    return rate_map
 
 def transform_and_load_transactions(spark):
     # 1. Ingest
@@ -28,16 +154,11 @@ def transform_and_load_transactions(spark):
     df_new_trans = df_trans
     
     if existing_df and not existing_df.isEmpty():
-        # Rename columns to avoid ambiguity during join
         existing_df = existing_df.select(
             col("transaction_id").alias("exist_id"), 
             col("original_amount").alias("exist_amount")
         )
         
-        # Left join to identify New or Updated records
-        # Logic: 
-        # 1. exist_id is Null -> New Record
-        # 2. exist_id is Not Null BUT original_amount != exist_amount -> Updated Record
         df_merged = df_trans.join(
             existing_df, 
             df_trans.transaction_id == existing_df.exist_id, 
@@ -47,7 +168,7 @@ def transform_and_load_transactions(spark):
         df_new_trans = df_merged.filter(
             col("exist_id").isNull() | 
             (col("original_amount").cast("decimal(18,2)") != col("exist_amount").cast("decimal(18,2)"))
-        ).select(df_trans.columns) # Keep only original columns
+        ).select(df_trans.columns)
     
     new_count = df_new_trans.count()
     print(f"  -> Records to Process (New + Updates): {new_count}")
@@ -56,61 +177,41 @@ def transform_and_load_transactions(spark):
         print("✅ No new or updated transactions found. Pipeline finished.")
         return
 
-    # 3. Currency Conversion
+    # 3. Currency Conversion with BATCH API CALLS
     print("\n=== Converting Currencies to USD ===")
 
-    # --- UDF DEFINITION ---
-    # UPDATED: Removed caching of default 1.0 failure.
-    # If the API fails, it returns 1.0 but does NOT store it in `_cache`.
-    # This ensures that on the next run, it tries the API again instead of using the bad cached value.
-    def fetch_exchange_rate(currency, date_str):
-
-        if currency == "USD":
-            return 1.0
-
-        try:
-            API_KEY = os.getenv("API_KEY")
-            url = (
-                "http://api.currencylayer.com/historical"
-                f"?access_key={API_KEY}&date={date_str}&source=USD"
-            )
-
-            response = requests.get(url, timeout=5)
-            data = response.json()
-
-            if not data.get("success"):
-                raise ValueError("Currency API returned success=false")
-
-            quotes = data.get("quotes")
-            if not quotes:
-                raise ValueError("Missing quotes in API response")
-
-            key = f"USD{currency}"
-            rate = quotes.get(key)
-
-            if rate is None or float(rate) == 0:
-                raise ValueError(f"Missing rate for {key}")
-
-            # USD -> GBP → invert to get GBP -> USD
-            return 1.0 / float(rate)
-
-        except Exception as e:
-            print(f"[WARN] FX fallback used for {currency} on {date_str}: {e}")
-            return 1.0
-
- 
-    convert_currency_udf = udf(fetch_exchange_rate, DoubleType())
-    
-    # Extract YYYY-MM-DD
+    # Extract date string
     df_with_date_str = df_new_trans.withColumn(
         "api_date_str", 
         substring(col("transaction_date").cast("string"), 1, 10)
     )
     
-    # Calculate amount_usd
+    # Collect unique currency-date combinations
+    print("[INFO] Collecting unique currency-date pairs...")
+    unique_pairs = df_with_date_str.select("currency_code", "api_date_str") \
+        .distinct() \
+        .collect()
+    
+    currency_date_tuples = [(row["currency_code"], row["api_date_str"]) for row in unique_pairs]
+    print(f"[INFO] Found {len(currency_date_tuples)} unique currency-date combinations")
+    
+    # Fetch all exchange rates in batch
+    rate_map = fetch_exchange_rates_batch(currency_date_tuples)
+    
+    # Broadcast the rate map to all workers
+    rate_map_broadcast = spark.sparkContext.broadcast(rate_map)
+    
+    # Create UDF that uses the broadcasted map
+    def lookup_rate(currency, date_str):
+        cache_key = f"{currency}_{date_str}"
+        return rate_map_broadcast.value.get(cache_key, 1.0)
+    
+    lookup_rate_udf = udf(lookup_rate, DoubleType())
+    
+    # Apply exchange rates
     df_final_trans = df_with_date_str.withColumn(
         "exchange_rate", 
-        convert_currency_udf(col("currency_code"), col("api_date_str"))
+        lookup_rate_udf(col("currency_code"), col("api_date_str"))
     ).withColumn(
         "original_amount", 
         col("original_amount").cast("decimal(18, 2)")
