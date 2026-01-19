@@ -82,15 +82,15 @@ def run_transaction_pipeline(spark_session, sync_day):
 # --- POST-SYNC TASKS ---
 
 @task(name="Mark Inactive Users")
-def post_sync_user_cleanup(spark_session):
+def post_sync_user_(spark_session):
     logger = get_run_logger()
-    logger.info("Running post-sync cleanup for Users...")
+    logger.info("Running post-sync done for Users...")
     logger.info("User status reconciliation complete (handled in main pipeline).")
 
 @task(name="Mark Inactive Groups")
-def post_sync_group_cleanup(spark_session):
+def post_sync_group_(spark_session):
     logger = get_run_logger()
-    logger.info("Running post-sync cleanup for Groups...")
+    logger.info("Running post-sync done for Groups...")
     logger.info("Group hierarchy status propagation complete.")
 
 # --- MAIN FLOW ---
@@ -130,8 +130,8 @@ def main_pipeline_flow():
     transaction_task = run_transaction_pipeline(spark, day)
     
     # D. Post-Sync Tasks (Wait for respective pipelines)
-    post_sync_user_cleanup(spark, wait_for=[user_task])
-    post_sync_group_cleanup(spark, wait_for=[group_task])
+    post_sync_user_(spark, wait_for=[user_task])
+    post_sync_group_(spark, wait_for=[group_task])
     
     logger.info(f"All pipelines for {day} completed.")
 
