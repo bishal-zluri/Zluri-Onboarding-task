@@ -8,12 +8,11 @@ import os
 # Current directory (src/)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Add 'src' itself to path if not present (useful if running from outside src)
+# Add 'src' itself to path if not present
 if CURRENT_DIR not in sys.path:
     sys.path.append(CURRENT_DIR)
 
-# CRITICAL FIX: Add specific pipeline subdirectories to sys.path.
-# We use sys.path.insert(0, ...) to ensure these paths take precedence.
+# CRITICAL FIX: Add specific pipeline subdirectories to sys.path
 sys.path.insert(0, os.path.join(CURRENT_DIR, 'user_pipeline'))
 sys.path.insert(0, os.path.join(CURRENT_DIR, 'groups_pipeline'))
 sys.path.insert(0, os.path.join(CURRENT_DIR, 'transaction_pipeline'))
@@ -94,17 +93,24 @@ def post_sync_group_cleanup(spark_session):
     logger.info("Running post-sync cleanup for Groups...")
     logger.info("Group hierarchy status propagation complete.")
 
-# --- SUB-FLOW FOR SINGLE DAY SYNC ---
-@flow(name="Single Day Sync Flow")
-def run_single_day_sync(spark, day: str):
+# --- MAIN FLOW ---
+
+@flow(name="Zluri Data Assignment Pipeline")
+def main_pipeline_flow():
     """
-    Sub-flow to encapsulate logic for a specific day.
-    This creates a separate Flow Run in the UI for each day.
+    Main orchestration flow. Runs all pipelines for a specific day.
     """
     logger = get_run_logger()
+    logger.info("Starting Main Orchestrator...")
+    
+    # 1. Initialize Spark
+    spark = get_spark_session()
+    
+    # 2. Define sync day
+    day = "sync-day2"
     logger.info(f"=== PROCESSING: {day} ===")
 
-    # Inject day into global config of imported modules
+    # 3. Inject day into global config of imported modules
     # (Assuming these modules use a global variable 'DAY_FOLDER')
     import s3_reader_users as ur
     ur.DAY_FOLDER = day
@@ -113,35 +119,21 @@ def run_single_day_sync(spark, day: str):
     import s3_reader_transaction as tr
     tr.DAY_FOLDER = day
     
-    # 1. Users (Critical Path)
+    # 4. Execute Tasks
+    # A. Users (Critical Path)
     user_task = run_user_pipeline(spark, day)
     
-    # 2. Groups (Depends on Users)
+    # B. Groups (Depends on Users)
     group_task = run_group_pipeline(spark, day, wait_for=[user_task])
     
-    # 3. Transactions (Independent)
+    # C. Transactions (Independent)
     transaction_task = run_transaction_pipeline(spark, day)
     
-    # 4. Post-Sync Tasks
+    # D. Post-Sync Tasks (Wait for respective pipelines)
     post_sync_user_cleanup(spark, wait_for=[user_task])
     post_sync_group_cleanup(spark, wait_for=[group_task])
-
-# --- MAIN FLOW ---
-
-@flow(name="Zluri Data Assignment Pipeline")
-def main_pipeline_flow():
-    """
-    Main orchestration flow. Triggers sub-flows for each day.
-    """
-    logger = get_run_logger()
-    logger.info("Starting Main Orchestrator...")
     
-    spark = get_spark_session()
-    
-    day = "sync-day2"
-    
-    run_single_day_sync(spark, day)
+    logger.info(f"All pipelines for {day} completed.")
 
 if __name__ == "__main__":
-    
     main_pipeline_flow()
