@@ -42,12 +42,6 @@ def fetch_exchange_rates_batch(currency_date_pairs):
     """
     Fetch exchange rates for multiple currency-date pairs in batch.
     Uses caching to minimize API calls.
-    
-    Args:
-        currency_date_pairs: List of (currency, date_str) tuples
-        
-    Returns:
-        Dictionary mapping "CURRENCY_DATE" -> rate
     """
     cache = load_cache()
     rate_map = {}
@@ -68,7 +62,7 @@ def fetch_exchange_rates_batch(currency_date_pairs):
         if cache_key in cache:
             rate_map[cache_key] = cache[cache_key]
             cache_hits += 1
-            print(f"[CACHE HIT] {currency} on {date_str}: {cache[cache_key]:.6f}")
+            # print(f"[CACHE HIT] {currency} on {date_str}: {cache[cache_key]:.6f}")
             continue
         
         # Not in cache, fetch from API
@@ -79,33 +73,29 @@ def fetch_exchange_rates_batch(currency_date_pairs):
             response = requests.get(url, timeout=10)
             
             if response.status_code == 429:
-                print(f"[ERROR] Rate limit reached. Processed {api_calls_made} API calls.")
-                print(f"[INFO] Using fallback rate 1.0 for {currency} on {date_str}")
+                print(f"[ERROR] Rate limit reached. Using fallback 1.0")
                 rate_map[cache_key] = 1.0
                 cache[cache_key] = 1.0
                 continue
             
             data = response.json()
-
             if not data.get("success"):
                 error_info = data.get("error", {})
                 print(f"[WARN] API failed for {currency} on {date_str}: {error_info}")
                 rate_map[cache_key] = 1.0
                 cache[cache_key] = 1.0
                 continue
-
             quotes = data.get("quotes")
             if not quotes:
                 print(f"[WARN] Missing quotes for {currency} on {date_str}")
                 rate_map[cache_key] = 1.0
                 cache[cache_key] = 1.0
                 continue
-
             key = f"USD{currency}"
-            rate = quotes.get(key)
+            rate = quotes.get(key) if quotes else None
 
             if rate is None or float(rate) == 0:
-                print(f"[WARN] Missing rate for {key}")
+                print(f"[WARN] Missing rate for {key}, using 1.0")
                 rate_map[cache_key] = 1.0
                 cache[cache_key] = 1.0
                 continue
@@ -114,27 +104,22 @@ def fetch_exchange_rates_batch(currency_date_pairs):
             converted_rate = 1.0 / float(rate)
             rate_map[cache_key] = converted_rate
             cache[cache_key] = converted_rate
-            
             print(f"[SUCCESS] {currency} on {date_str}: {converted_rate:.6f}")
-            api_calls_made += 1
             
-            # Add delay between API calls to avoid rate limiting
+            api_calls_made += 1
             if api_calls_made < len(currency_date_pairs):
-                time.sleep(0.5)  # 500ms delay between calls
+                time.sleep(0.5) 
 
         except Exception as e:
             print(f"[ERROR] Exception fetching {currency} on {date_str}: {e}")
             rate_map[cache_key] = 1.0
             cache[cache_key] = 1.0
     
-    # Save updated cache
     save_cache(cache)
-    
     print(f"\n=== Exchange Rate Fetch Summary ===")
     print(f"Cache Hits: {cache_hits}")
     print(f"API Calls Made: {api_calls_made}")
     print(f"Total Rates Fetched: {len(rate_map)}")
-    
     return rate_map
 
 def transform_and_load_transactions(spark):
@@ -147,7 +132,14 @@ def transform_and_load_transactions(spark):
         print("No transactions to process.")
         return
 
-    # 2. Delta Check with Update Logic
+    # --- FIX 1: HANDLE NULL AMOUNTS IMMEDIATELY ---
+    # Enforce logic: If original_amount is NULL, set to 0.
+    df_trans = df_trans.withColumn(
+        "original_amount", 
+        coalesce(col("original_amount"), lit(0))
+    )
+
+    # 2. Delta Check
     print("\n=== Checking for New or Updated Transactions (Delta) ===")
     existing_df = get_existing_transaction_ids(spark)
     
@@ -177,38 +169,27 @@ def transform_and_load_transactions(spark):
         print("✅ No new or updated transactions found. Pipeline finished.")
         return
 
-    # 3. Currency Conversion with BATCH API CALLS
+    # 3. Currency Conversion
     print("\n=== Converting Currencies to USD ===")
-
-    # Extract date string
     df_with_date_str = df_new_trans.withColumn(
         "api_date_str", 
         substring(col("transaction_date").cast("string"), 1, 10)
     )
     
-    # Collect unique currency-date combinations
-    print("[INFO] Collecting unique currency-date pairs...")
-    unique_pairs = df_with_date_str.select("currency_code", "api_date_str") \
-        .distinct() \
-        .collect()
-    
+    unique_pairs = df_with_date_str.select("currency_code", "api_date_str").distinct().collect()
     currency_date_tuples = [(row["currency_code"], row["api_date_str"]) for row in unique_pairs]
-    print(f"[INFO] Found {len(currency_date_tuples)} unique currency-date combinations")
     
-    # Fetch all exchange rates in batch
     rate_map = fetch_exchange_rates_batch(currency_date_tuples)
-    
-    # Broadcast the rate map to all workers
     rate_map_broadcast = spark.sparkContext.broadcast(rate_map)
     
-    # Create UDF that uses the broadcasted map
     def lookup_rate(currency, date_str):
         cache_key = f"{currency}_{date_str}"
         return rate_map_broadcast.value.get(cache_key, 1.0)
     
     lookup_rate_udf = udf(lookup_rate, DoubleType())
     
-    # Apply exchange rates
+    # Apply rates and Calculate USD
+    # Note: Since original_amount is forced to 0 if null, 0 * rate = 0 USD.
     df_final_trans = df_with_date_str.withColumn(
         "exchange_rate", 
         lookup_rate_udf(col("currency_code"), col("api_date_str"))
@@ -220,9 +201,21 @@ def transform_and_load_transactions(spark):
         (col("original_amount") * col("exchange_rate")).cast("decimal(18, 2)")
     ).drop("api_date_str")
 
-    # 4. Joins
-    print("\n=== Building Join Tables ===")
+    # 4. Preparing Dimension DataFrames (Cards & Budgets)
+    # We extract distinct cards and budgets referenced in the transactions
+    # This ensures we satisfy the schema requirement of having Cards/Budgets tables.
+    
+    # Cards Dimension
+    df_cards_dim = df_cards.select(
+        "card_id", "card_name", "card_last_four", "card_type", "card_status"
+    ).distinct()
 
+    # Budgets Dimension
+    df_budgets_dim = df_budgets.select(
+        "budget_id", "budget_name", "budget_description"
+    ).distinct()
+
+    # 5. Preparing Junction Tables (Transaction-Cards, Transaction-Budgets)
     df_trans_cards_join = df_final_trans.alias("t").join(
         df_cards.alias("c"),
         col("t.card_id") == col("c.card_id"),
@@ -247,12 +240,15 @@ def transform_and_load_transactions(spark):
         col("b.budget_description")
     )
 
-    # 5. Load
+    # 6. Load
+    # Pass the dimension tables (df_cards_dim, df_budgets_dim) to the loader
     load_transaction_pipeline(
         spark, 
         df_final_trans, 
         df_trans_cards_join, 
-        df_trans_budgets_join
+        df_trans_budgets_join,
+        df_cards_dim,     # New
+        df_budgets_dim    # New
     )
 
 if __name__ == "__main__":

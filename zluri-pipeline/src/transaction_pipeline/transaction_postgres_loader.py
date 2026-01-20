@@ -16,11 +16,15 @@ DB_PROPERTIES = {
 
 # Tables
 TABLE_TRANS = "transactions"
+TABLE_CARDS = "cards"              # New: Cards Dimension
+TABLE_BUDGETS = "budgets"          # New: Budgets Dimension
 TABLE_TRANS_CARDS = "transaction_cards"
 TABLE_TRANS_BUDGETS = "transaction_budgets"
 
 # Stages
 TEMP_TRANS = "trans_stage"
+TEMP_CARDS = "cards_stage"         # New
+TEMP_BUDGETS = "budgets_stage"     # New
 TEMP_TC = "trans_cards_stage"
 TEMP_TB = "trans_budgets_stage"
 
@@ -41,16 +45,42 @@ def execute_raw_sql(spark, sql_query):
 def init_db(spark):
     print("\n--- [DB] Initializing Transaction Tables ---")
     
-    # 1. Transactions Table
+    # 1. Dimension: Cards (PK: card_id)
+    try:
+        execute_raw_sql(spark, f"""
+        CREATE TABLE IF NOT EXISTS {TABLE_CARDS} (
+            card_id TEXT PRIMARY KEY,
+            card_name TEXT,
+            card_last_four TEXT,
+            card_type TEXT,
+            card_status TEXT
+        );
+        """)
+    except Exception as e:
+        if "already exists" not in str(e).lower(): raise e
+
+    # 2. Dimension: Budgets (PK: budget_id)
+    try:
+        execute_raw_sql(spark, f"""
+        CREATE TABLE IF NOT EXISTS {TABLE_BUDGETS} (
+            budget_id TEXT PRIMARY KEY,
+            budget_name TEXT,
+            budget_description TEXT
+        );
+        """)
+    except Exception as e:
+        if "already exists" not in str(e).lower(): raise e
+
+    # 3. Transactions Table (Refers to Card/Budget implicitly via ID)
     try:
         execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_TRANS} (
             transaction_id TEXT PRIMARY KEY,
             transaction_type TEXT,
             transaction_date DATE,
-            original_amount DECIMAL(18, 2),
+            original_amount DECIMAL(18, 2) DEFAULT 0,
             currency_code TEXT,
-            amount_usd DECIMAL(18, 2),
+            amount_usd DECIMAL(18, 2) DEFAULT 0,
             merchant_name TEXT,
             card_id TEXT,
             budget_id TEXT,
@@ -60,7 +90,7 @@ def init_db(spark):
     except Exception as e:
         if "already exists" not in str(e).lower(): raise e
     
-    # 2. Transaction Cards
+    # 4. Junction: Transaction Cards
     try:
         execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_TRANS_CARDS} (
@@ -76,7 +106,7 @@ def init_db(spark):
     except Exception as e:
         if "already exists" not in str(e).lower(): raise e
     
-    # 3. Transaction Budgets
+    # 5. Junction: Transaction Budgets
     try:
         execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_TRANS_BUDGETS} (
@@ -91,22 +121,48 @@ def init_db(spark):
         if "already exists" not in str(e).lower(): raise e
 
 def get_existing_transaction_ids(spark):
-    """ 
-    Used for Delta Load filtering.
-    UPDATED: Returns both transaction_id and original_amount to detect updates.
-    """
+    """ Used for Delta Load filtering. """
     try:
         init_db(spark)
         df = spark.read.jdbc(url=DB_URL, table=TABLE_TRANS, properties=DB_PROPERTIES)
-        # Select both ID and Amount to check for value changes
         return df.select("transaction_id", "original_amount")
     except Exception:
         return None
 
-def load_transaction_pipeline(spark, df_trans, df_cards_join, df_budgets_join):
+def load_transaction_pipeline(spark, df_trans, df_cards_join, df_budgets_join, df_cards_dim, df_budgets_dim):
     init_db(spark)
     
-    # --- 1. Load Transactions (Upsert) ---
+    # --- 1. Load Dimension: CARDS (Upsert) ---
+    if not df_cards_dim.isEmpty():
+        print(f"--- Loading {df_cards_dim.count()} Cards (Dimension) ---")
+        df_cards_dim.write.jdbc(DB_URL, TEMP_CARDS, "overwrite", DB_PROPERTIES)
+        
+        upsert_cards = f"""
+        INSERT INTO {TABLE_CARDS} (card_id, card_name, card_last_four, card_type, card_status)
+        SELECT card_id, card_name, card_last_four, card_type, card_status FROM {TEMP_CARDS}
+        ON CONFLICT (card_id) DO UPDATE SET
+            card_name = EXCLUDED.card_name,
+            card_status = EXCLUDED.card_status;
+        """
+        execute_raw_sql(spark, upsert_cards)
+        print("✅ Cards Loaded.")
+
+    # --- 2. Load Dimension: BUDGETS (Upsert) ---
+    if not df_budgets_dim.isEmpty():
+        print(f"--- Loading {df_budgets_dim.count()} Budgets (Dimension) ---")
+        df_budgets_dim.write.jdbc(DB_URL, TEMP_BUDGETS, "overwrite", DB_PROPERTIES)
+        
+        upsert_budgets = f"""
+        INSERT INTO {TABLE_BUDGETS} (budget_id, budget_name, budget_description)
+        SELECT budget_id, budget_name, budget_description FROM {TEMP_BUDGETS}
+        ON CONFLICT (budget_id) DO UPDATE SET
+            budget_name = EXCLUDED.budget_name,
+            budget_description = EXCLUDED.budget_description;
+        """
+        execute_raw_sql(spark, upsert_budgets)
+        print("✅ Budgets Loaded.")
+
+    # --- 3. Load Transactions (Upsert) ---
     if not df_trans.isEmpty():
         print(f"--- Loading {df_trans.count()} Transactions ---")
         df_trans.write.jdbc(DB_URL, TEMP_TRANS, "overwrite", DB_PROPERTIES)
@@ -134,7 +190,7 @@ def load_transaction_pipeline(spark, df_trans, df_cards_join, df_budgets_join):
         execute_raw_sql(spark, upsert_sql)
         print("✅ Transactions Loaded.")
 
-    # --- 2. Load Transaction-Cards ---
+    # --- 4. Load Junction: Transaction-Cards ---
     if not df_cards_join.isEmpty():
         print(f"--- Loading {df_cards_join.count()} Card Links ---")
         df_cards_join.write.jdbc(DB_URL, TEMP_TC, "overwrite", DB_PROPERTIES)
@@ -150,15 +206,12 @@ def load_transaction_pipeline(spark, df_trans, df_cards_join, df_budgets_join):
         FROM {TEMP_TC}
         ON CONFLICT (transaction_id, card_id) 
         DO UPDATE SET
-            card_name = EXCLUDED.card_name,
-            card_last_four = EXCLUDED.card_last_four,
-            card_type = EXCLUDED.card_type,
-            card_status = EXCLUDED.card_status;
+            card_name = EXCLUDED.card_name;
         """
         execute_raw_sql(spark, insert_sql)
         print("✅ Transaction-Card Links Loaded.")
 
-    # --- 3. Load Transaction-Budgets ---
+    # --- 5. Load Junction: Transaction-Budgets ---
     if not df_budgets_join.isEmpty():
         print(f"--- Loading {df_budgets_join.count()} Budget Links ---")
         df_budgets_join.write.jdbc(DB_URL, TEMP_TB, "overwrite", DB_PROPERTIES)
@@ -172,14 +225,15 @@ def load_transaction_pipeline(spark, df_trans, df_cards_join, df_budgets_join):
         FROM {TEMP_TB}
         ON CONFLICT (transaction_id, budget_id)
         DO UPDATE SET
-            budget_name = EXCLUDED.budget_name,
-            budget_description = EXCLUDED.budget_description;
+            budget_name = EXCLUDED.budget_name;
         """
         execute_raw_sql(spark, insert_sql)
         print("✅ Transaction-Budget Links Loaded.")
         
     try:
         execute_raw_sql(spark, f"DROP TABLE IF EXISTS {TEMP_TRANS}")
+        execute_raw_sql(spark, f"DROP TABLE IF EXISTS {TEMP_CARDS}")
+        execute_raw_sql(spark, f"DROP TABLE IF EXISTS {TEMP_BUDGETS}")
         execute_raw_sql(spark, f"DROP TABLE IF EXISTS {TEMP_TC}")
         execute_raw_sql(spark, f"DROP TABLE IF EXISTS {TEMP_TB}")
     except:
