@@ -40,12 +40,14 @@ def transform_and_reconcile_users(spark):
         )
     else:
         # Merge Logic
+        # FIX 1: Fetch 'updated_at' from the database so we can preserve it
         df_old = df_db.select(
             col("user_id").alias("db_id"),
             col("user_name").alias("db_name"),
             col("user_email").alias("db_email"),
             col("status").alias("db_status"),
-            col("created_at").alias("db_created")
+            col("created_at").alias("db_created"),
+            col("updated_at").alias("db_updated")  # <--- ADDED THIS
         ).alias("old")
 
         # Full Outer Join to find both New and Deleted users
@@ -65,12 +67,15 @@ def transform_and_reconcile_users(spark):
             .otherwise("inactive")
             .alias("status"),
 
-            # Timestamps
+            # Created At: Keep original creation date
             coalesce(col("new.created_at"), col("old.db_created")).alias("created_at"),
-            col("new.updated_at") 
+            
+            # FIX 2: PRESERVE UPDATED_AT
+            # If the user is new (active), use new timestamp.
+            # If the user is missing (inactive), fallback to the old DB timestamp.
+            coalesce(col("new.updated_at"), col("old.db_updated")).alias("updated_at") 
         )
         
-    # --- FIX: Filter applied OUTSIDE the if/else block so it applies to Initial Load too ---
     # Filter out rows that are completely null (safety check)
     df_final_users = df_final_users.filter(col("user_id").isNotNull())
 
@@ -82,10 +87,9 @@ def transform_and_reconcile_users(spark):
     # --- SEND ALL TO LOADER ---
     load_user_pipeline(spark, df_final_users, df_roles, df_user_roles)
 
-
 if __name__ == "__main__":
     print("--- Launching User Transformer ---")
-    
+    # ... (Your existing Spark Session Builder code remains unchanged) ...
     spark = (
         SparkSession.builder
         .appName("UserTransformer")

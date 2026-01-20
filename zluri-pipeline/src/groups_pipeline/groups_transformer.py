@@ -99,7 +99,7 @@ def transform_and_reconcile_groups(spark):
                   "inner") \
             .filter(col("parent.final_active_flag") == 0) \
             .select(col("parent.group_id").alias("target_id")) \
-            .distinct()
+            .distinct() # distinct because there can be two childs with same parent so we need to update only one distinct parent
             
         # C. Convergence Check
         count_changes = parents_to_activate.count()

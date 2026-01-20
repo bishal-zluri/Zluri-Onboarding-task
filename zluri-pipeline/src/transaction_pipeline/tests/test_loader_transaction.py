@@ -2,7 +2,7 @@ import pytest
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, DecimalType, DateType
 from unittest.mock import patch, MagicMock, Mock
-from decimal import Decimal # --- FIX: Import Decimal ---
+from decimal import Decimal
 from datetime import date
 import sys
 import os
@@ -10,9 +10,9 @@ import os
 # Ensure current directory is in path
 sys.path.append(os.getcwd())
 
+# --- FIX: Removed '_add_column_if_missing' from imports ---
 from transaction_postgres_loader import (
     execute_raw_sql,
-    _add_column_if_missing,
     init_db,
     get_existing_transaction_ids,
     load_transaction_pipeline,
@@ -45,7 +45,6 @@ def sample_trans_df(spark):
         StructField("budget_id", StringType(), True),
         StructField("exchange_rate", DecimalType(18, 2), True)
     ])
-    # --- FIX: Use Decimal for DecimalType fields ---
     data = [
         ("txn1", "AUTH", "2024-01-01", Decimal("100.0"), "USD", Decimal("100.0"), "Merchant 1", "card1", "budget1", Decimal("1.0")),
         ("txn2", "PURCHASE", "2024-01-02", Decimal("50.0"), "GBP", Decimal("67.5"), "Merchant 2", "card2", "budget2", Decimal("1.35"))
@@ -173,9 +172,6 @@ class TestLoadTransactionPipeline:
         mock_cards.write.jdbc.assert_called()
         mock_budgets.write.jdbc.assert_called()
         assert mock_execute.called
-    
-    # ... (Logic for other tests like test_load_transactions_upsert is similar, 
-    # check SQL strings passed to mock_execute using the same logic as User/Group tests)
 
     @patch('transaction_postgres_loader.init_db')
     @patch('transaction_postgres_loader.execute_raw_sql')

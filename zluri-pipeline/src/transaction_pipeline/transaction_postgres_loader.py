@@ -38,17 +38,6 @@ def execute_raw_sql(spark, sql_query):
     finally:
         if conn: conn.close()
 
-def _add_column_if_missing(spark, table, col_def):
-    try:
-        # print(f"   -> checking column: {col_def} on {table}")
-        sql = f"ALTER TABLE {table} ADD COLUMN {col_def}"
-        execute_raw_sql(spark, sql)
-    except Exception as e:
-        if "already exists" in str(e).lower():
-            pass
-        else:
-            print(f"⚠️ Warning during schema update: {e}")
-
 def init_db(spark):
     print("\n--- [DB] Initializing Transaction Tables ---")
     
@@ -62,15 +51,14 @@ def init_db(spark):
             original_amount DECIMAL(18, 2),
             currency_code TEXT,
             amount_usd DECIMAL(18, 2),
+            merchant_name TEXT,
+            card_id TEXT,
+            budget_id TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
         """)
     except Exception as e:
         if "already exists" not in str(e).lower(): raise e
-
-    _add_column_if_missing(spark, TABLE_TRANS, "merchant_name TEXT")
-    _add_column_if_missing(spark, TABLE_TRANS, "card_id TEXT")
-    _add_column_if_missing(spark, TABLE_TRANS, "budget_id TEXT")
     
     # 2. Transaction Cards
     try:
