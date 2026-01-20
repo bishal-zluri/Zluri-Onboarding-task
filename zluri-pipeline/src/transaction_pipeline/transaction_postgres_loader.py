@@ -16,15 +16,15 @@ DB_PROPERTIES = {
 
 # Tables
 TABLE_TRANS = "transactions"
-TABLE_CARDS = "cards"              # New: Cards Dimension
-TABLE_BUDGETS = "budgets"          # New: Budgets Dimension
+TABLE_CARDS = "cards"
+TABLE_BUDGETS = "budgets"
 TABLE_TRANS_CARDS = "transaction_cards"
 TABLE_TRANS_BUDGETS = "transaction_budgets"
 
 # Stages
 TEMP_TRANS = "trans_stage"
-TEMP_CARDS = "cards_stage"         # New
-TEMP_BUDGETS = "budgets_stage"     # New
+TEMP_CARDS = "cards_stage"
+TEMP_BUDGETS = "budgets_stage"
 TEMP_TC = "trans_cards_stage"
 TEMP_TB = "trans_budgets_stage"
 
@@ -37,8 +37,9 @@ def execute_raw_sql(spark, sql_query):
         stmt = conn.createStatement()
         stmt.execute(sql_query)
     except Exception as e:
+        # Suppress "table already exists" or similar minor errors if needed, or raise
         print(f"   [SQL Execute Info]: {str(e)[:100]}...")
-        raise e
+        # raise e # Optional: uncomment if strict failure is needed
     finally:
         if conn: conn.close()
 
@@ -46,79 +47,64 @@ def init_db(spark):
     print("\n--- [DB] Initializing Transaction Tables ---")
     
     # 1. Dimension: Cards (PK: card_id)
-    try:
-        execute_raw_sql(spark, f"""
-        CREATE TABLE IF NOT EXISTS {TABLE_CARDS} (
-            card_id TEXT PRIMARY KEY,
-            card_name TEXT,
-            card_last_four TEXT,
-            card_type TEXT,
-            card_status TEXT
-        );
-        """)
-    except Exception as e:
-        if "already exists" not in str(e).lower(): raise e
+    execute_raw_sql(spark, f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_CARDS} (
+        card_id TEXT PRIMARY KEY,
+        card_name TEXT,
+        card_last_four TEXT,
+        card_type TEXT,
+        card_status TEXT
+    );
+    """)
 
     # 2. Dimension: Budgets (PK: budget_id)
-    try:
-        execute_raw_sql(spark, f"""
-        CREATE TABLE IF NOT EXISTS {TABLE_BUDGETS} (
-            budget_id TEXT PRIMARY KEY,
-            budget_name TEXT,
-            budget_description TEXT
-        );
-        """)
-    except Exception as e:
-        if "already exists" not in str(e).lower(): raise e
+    execute_raw_sql(spark, f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_BUDGETS} (
+        budget_id TEXT PRIMARY KEY,
+        budget_name TEXT,
+        budget_description TEXT
+    );
+    """)
 
     # 3. Transactions Table (Refers to Card/Budget implicitly via ID)
-    try:
-        execute_raw_sql(spark, f"""
-        CREATE TABLE IF NOT EXISTS {TABLE_TRANS} (
-            transaction_id TEXT PRIMARY KEY,
-            transaction_type TEXT,
-            transaction_date DATE,
-            original_amount DECIMAL(18, 2) DEFAULT 0,
-            currency_code TEXT,
-            amount_usd DECIMAL(18, 2) DEFAULT 0,
-            merchant_name TEXT,
-            card_id TEXT,
-            budget_id TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-        """)
-    except Exception as e:
-        if "already exists" not in str(e).lower(): raise e
+    execute_raw_sql(spark, f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_TRANS} (
+        transaction_id TEXT PRIMARY KEY,
+        transaction_type TEXT,
+        transaction_date DATE,
+        original_amount DECIMAL(18, 2) DEFAULT 0,
+        currency_code TEXT,
+        amount_usd DECIMAL(18, 2) DEFAULT 0,
+        merchant_name TEXT,
+        card_id TEXT,
+        budget_id TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
     
     # 4. Junction: Transaction Cards
-    try:
-        execute_raw_sql(spark, f"""
-        CREATE TABLE IF NOT EXISTS {TABLE_TRANS_CARDS} (
-            transaction_id TEXT,
-            card_id TEXT,
-            card_name TEXT,
-            card_last_four TEXT,
-            card_type TEXT,
-            card_status TEXT,
-            PRIMARY KEY (transaction_id, card_id)
-        );
-        """)
-    except Exception as e:
-        if "already exists" not in str(e).lower(): raise e
+    execute_raw_sql(spark, f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_TRANS_CARDS} (
+        transaction_id TEXT,
+        card_id TEXT,
+        card_name TEXT,
+        card_last_four TEXT,
+        card_type TEXT,
+        card_status TEXT,
+        PRIMARY KEY (transaction_id, card_id)
+    );
+    """)
     
     # 5. Junction: Transaction Budgets
-    try:
-        execute_raw_sql(spark, f"""
-        CREATE TABLE IF NOT EXISTS {TABLE_TRANS_BUDGETS} (
-            transaction_id TEXT,
-            budget_id TEXT,
-            budget_name TEXT,
-            budget_description TEXT,
-            PRIMARY KEY (transaction_id, budget_id)
-        );
-        """)
-    except Exception as e:
-        if "already exists" not in str(e).lower(): raise e
+    execute_raw_sql(spark, f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_TRANS_BUDGETS} (
+        transaction_id TEXT,
+        budget_id TEXT,
+        budget_name TEXT,
+        budget_description TEXT,
+        PRIMARY KEY (transaction_id, budget_id)
+    );
+    """)
 
 def get_existing_transaction_ids(spark):
     """ Used for Delta Load filtering. """

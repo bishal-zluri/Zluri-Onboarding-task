@@ -1,6 +1,7 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import input_file_name, col, explode, array, lit, when, pow, coalesce, struct
 from functools import reduce
+import os
 
 # --- 1. CONFIGURATION ---
 BUCKET_NAME = "zluri-data-assignment"
@@ -11,19 +12,33 @@ ENTITY_TRANSACTIONS = "transactions"
 ENTITY_CARDS = "cards"
 ENTITY_BUDGETS = "budgets"
 
-# Base S3A Path
-S3_BASE_PATH = f"s3a://{BUCKET_NAME}/{BASE_FOLDER}"
-
 # --- 2. READER UTILS ---
-def read_s3_data(spark, folder_name):
-    base_path = f"{S3_BASE_PATH}/{DAY_FOLDER}/{folder_name}/"
+def read_local_data(spark, folder_name):
+    """
+    Scans a specific entity folder in the local filesystem.
+    Navigates up from src/transaction_pipeline -> src -> zluri-pipeline -> ONBOARDING TASK
+    """
+    # 1. Get current directory (e.g., .../src/transaction_pipeline)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # 2. Navigate up 3 levels to reach 'ONBOARDING TASK' root
+    project_root = os.path.abspath(os.path.join(current_dir, "../../../"))
+    
+    # 3. Construct absolute path
+    target_dir = os.path.join(project_root, DAY_FOLDER, folder_name)
+    base_path = f"file://{target_dir}"
+    
     formats = ['json', 'csv', 'parquet']
     found_dfs = []
 
-    print(f"Scanning: {base_path} ...")
+    print(f"Scanning Local Path: {base_path} ...")
+    
     for fmt in formats:
-        full_pattern = f"{base_path}*.{fmt}"
+        full_pattern = os.path.join(base_path, f"*.{fmt}")
         try:
+            if not os.path.exists(target_dir):
+                continue
+
             if fmt == 'json':
                 df = spark.read.option("multiline", "true").json(full_pattern)
             elif fmt == 'csv':
@@ -32,13 +47,14 @@ def read_s3_data(spark, folder_name):
                 df = spark.read.parquet(full_pattern)
             
             if not df.isEmpty():
+                df = df.withColumn("source_path", input_file_name())
                 print(f"  -> Loaded {fmt} files.")
                 found_dfs.append(df)
         except Exception:
             continue
 
     if not found_dfs:
-        print(f"  [!] No data found for entity: {folder_name}")
+        print(f"  [!] No data found for entity: {folder_name} at {target_dir}")
         return None
 
     return reduce(lambda df1, df2: df1.unionByName(df2, allowMissingColumns=True), found_dfs)
@@ -48,7 +64,7 @@ def read_s3_data(spark, folder_name):
 def process_cards_data(spark):
     """ Reads Cards Data for Joins """
     print(f"--- Loading Cards ---")
-    df = read_s3_data(spark, ENTITY_CARDS)
+    df = read_local_data(spark, ENTITY_CARDS)
     if df is None: return None
     
     if "results" in df.columns:
@@ -65,7 +81,7 @@ def process_cards_data(spark):
 def process_budgets_data(spark):
     """ Reads Budgets Data for Joins """
     print(f"--- Loading Budgets ---")
-    df = read_s3_data(spark, ENTITY_BUDGETS)
+    df = read_local_data(spark, ENTITY_BUDGETS)
     if df is None: return None
     
     if "results" in df.columns:
@@ -85,7 +101,7 @@ def process_transactions_schema(spark):
     Extracts Transaction data.
     """
     print(f"--- Loading Transactions ---")
-    df_trans_raw = read_s3_data(spark, ENTITY_TRANSACTIONS)
+    df_trans_raw = read_local_data(spark, ENTITY_TRANSACTIONS)
     
     if df_trans_raw is None:
         print("Critical Error: Missing Transaction data.")
@@ -95,7 +111,7 @@ def process_transactions_schema(spark):
     if "results" in df_trans_raw.columns:
         df_exploded = df_trans_raw.select(explode(col("results")).alias("t"))
     else:
-        # --- FIX: Use struct() to wrap columns before aliasing ---
+        # Use struct wrapping for consistency
         df_exploded = df_trans_raw.select(struct(col("*")).alias("t"))
     
     cols = df_exploded.select("t.*").columns
@@ -133,3 +149,29 @@ def process_transactions_schema(spark):
     
     print(f"  -> Extracted {df_final.count()} unique transactions.")
     return df_final
+
+# --- EXECUTION BLOCK ---
+if __name__ == "__main__":
+    print("--- Running Transaction Reader Individually ---")
+    spark = SparkSession.builder \
+        .appName("TransactionReaderLocal") \
+        .config("spark.driver.bindAddress", "127.0.0.1") \
+        .config("spark.driver.host", "127.0.0.1") \
+        .master("local[*]") \
+        .getOrCreate()
+    
+    try:
+        # Run main transaction logic
+        df_trans = process_transactions_schema(spark)
+        if df_trans:
+            print("\nPreviewing Transactions:")
+            df_trans.show(5, truncate=False)
+        
+        # Optional: Run Card/Budget logic to verify
+        df_cards = process_cards_data(spark)
+        if df_cards:
+            print("\nPreviewing Cards:")
+            df_cards.show(5, truncate=False)
+
+    finally:
+        spark.stop()

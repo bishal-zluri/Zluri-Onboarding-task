@@ -8,14 +8,13 @@ from groups_postgres_loader import get_db_table, write_to_db, TABLE_GROUPS, TABL
 
 def transform_and_reconcile_groups(spark):
     # ---------------------------------------------------------
-    # STEP 1: Ingest Groups from S3
+    # STEP 1: Ingest Groups from Local
     # ---------------------------------------------------------
     df_raw_groups = process_groups_data(spark)
     if df_raw_groups is None: 
-        print("No group data found in S3.")
+        print("No group data found.")
         return
 
-    # Clean & Select relevant columns
     df_groups_clean = df_raw_groups.select(
         col("id").cast("long").alias("group_id"),
         col("name").alias("group_name"),
@@ -26,14 +25,13 @@ def transform_and_reconcile_groups(spark):
         col("user_ids")
     ).filter(col("group_id").isNotNull())
 
-    print(f"[INGEST] Valid S3 Groups: {df_groups_clean.count()}")
+    print(f"[INGEST] Valid Groups: {df_groups_clean.count()}")
 
     # ---------------------------------------------------------
     # STEP 2: Generate GroupMembers & Calculate Direct Status
     # ---------------------------------------------------------
     print("\n=== Calculating Direct Group Status (User Based) ===")
     
-    # A. Get User Status from DB
     df_db_users = get_db_table(spark, TABLE_USERS)
     
     if df_db_users is None or df_db_users.isEmpty():
@@ -48,13 +46,11 @@ def transform_and_reconcile_groups(spark):
             col("status").alias("u_status")
         )
 
-    # B. Explode to create GroupMembers Table
     df_members_exploded = df_groups_clean.select(
         col("group_id"),
         explode(col("user_ids")).alias("member_id")
     )
 
-    # C. Join with User Status
     df_group_members = df_members_exploded.join(
         df_user_status,
         df_members_exploded.member_id == df_user_status.u_id,
@@ -65,7 +61,6 @@ def transform_and_reconcile_groups(spark):
         coalesce(col("u_status"), lit("inactive")).alias("user_status")
     )
 
-    # D. Calculate Direct Status (Based on Users only)
     df_direct_status = df_group_members.groupBy("group_id").agg(
         spark_max(when(col("user_status") == "active", 1).otherwise(0)).alias("is_active_direct")
     )
@@ -75,33 +70,28 @@ def transform_and_reconcile_groups(spark):
     # ---------------------------------------------------------
     print("\n=== Propagating Status Upwards (Leaf -> Root) ===")
 
-    # Initialize Hierarchy DataFrame
     current_df = df_groups_clean.select("group_id", "parent_group_id") \
         .join(df_direct_status, on="group_id", how="left") \
         .na.fill(0, ["is_active_direct"]) \
         .withColumn("final_active_flag", col("is_active_direct")) \
         .cache()
 
-    # Iterative Propagation Loop
     iteration = 0
     
     while True:
         iteration += 1
         
-        # A. Find "Active Children" that have Parents
         active_nodes_with_parents = current_df.filter(col("final_active_flag") == 1) \
                                               .filter(col("parent_group_id").isNotNull())
         
-        # B. Identify Parents that need to be updated
         parents_to_activate = current_df.alias("parent") \
             .join(active_nodes_with_parents.alias("child"), 
                   col("parent.group_id") == col("child.parent_group_id"), 
                   "inner") \
             .filter(col("parent.final_active_flag") == 0) \
             .select(col("parent.group_id").alias("target_id")) \
-            .distinct() # distinct because there can be two childs with same parent so we need to update only one distinct parent
+            .distinct() 
             
-        # C. Convergence Check
         count_changes = parents_to_activate.count()
         if count_changes == 0:
             print(f"-> Convergence reached after {iteration-1} iterations.")
@@ -109,7 +99,6 @@ def transform_and_reconcile_groups(spark):
             
         print(f"   Iteration {iteration}: Propagating activity to {count_changes} parent groups...")
 
-        # D. Apply Updates
         current_df = current_df.alias("main").join(
             parents_to_activate.alias("updates"),
             col("main.group_id") == col("updates.target_id"),
@@ -124,13 +113,11 @@ def transform_and_reconcile_groups(spark):
             ).otherwise(0).alias("final_active_flag")
         ).localCheckpoint()
 
-    # Final Status Mapping
     df_calc_status = current_df.select(
         col("group_id"),
         when(col("final_active_flag") == 1, "active").otherwise("inactive").alias("derived_status")
     )
 
-    # E. Join Status back to Groups
     df_groups_with_status = df_groups_clean.join(df_calc_status, on="group_id", how="left")
 
     # ---------------------------------------------------------
@@ -140,14 +127,12 @@ def transform_and_reconcile_groups(spark):
     df_db_groups = get_db_table(spark, TABLE_GROUPS)
 
     if df_db_groups is None:
-        # Initial Load
         df_final_groups = df_groups_with_status.select(
             "group_id", "group_name", "description", "user_ids", "parent_group_id",
             col("derived_status").alias("status"), 
             "created_at", "updated_at"
         )
     else:
-        # Prepare DB Data
         sel_cols = [
             col("group_id").alias("db_gid"),
             col("group_name").alias("db_gname"),
@@ -175,10 +160,7 @@ def transform_and_reconcile_groups(spark):
             coalesce(col("group_id"), col("db_gid")).alias("group_id"),
             coalesce(col("group_name"), col("db_gname")).alias("group_name"),
             coalesce(col("description"), col("db_desc")).alias("description"),
-            
-            # Prioritize S3 parent_group_id over DB to fix incorrect values
             coalesce(col("parent_group_id"), col("db_parent_id")).alias("parent_group_id"),
-            
             coalesce(col("user_ids"), col("db_user_ids")).alias("user_ids"),
             
             when(col("group_id").isNull(), "inactive")
@@ -189,6 +171,8 @@ def transform_and_reconcile_groups(spark):
             coalesce(col("updated_at"), col("db_updated")).alias("updated_at")
         )
 
+    df_final_groups = df_final_groups.filter(col("group_id").isNotNull())
+
     # ---------------------------------------------------------
     # STEP 4: Write Both Tables
     # ---------------------------------------------------------
@@ -196,18 +180,17 @@ def transform_and_reconcile_groups(spark):
 
 
 if __name__ == "__main__":
-    print(f"--- Launching Group Transformer ---")
-    spark = SparkSession.builder \
-        .appName("GroupTransformer") \
-        .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262") \
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
-        .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider") \
-        .config("spark.hadoop.fs.s3a.threads.keepalivetime", "60") \
-        .config("spark.hadoop.fs.s3a.connection.establish.timeout", "30000") \
-        .config("spark.hadoop.fs.s3a.connection.timeout", "30000") \
-        .config("spark.hadoop.fs.s3a.multipart.purge.age", "86400") \
-        .config("spark.jars", POSTGRES_JAR) \
-        .config("spark.driver.extraClassPath", POSTGRES_JAR) \
+    print(f"--- Launching Group Transformer (Local) ---")
+    
+    spark = (
+        SparkSession.builder
+        .appName("GroupTransformer")
+        # FIXED: Forces Localhost binding to avoid VPN/Network IP issues
+        .config("spark.driver.bindAddress", "127.0.0.1")
+        .config("spark.driver.host", "127.0.0.1") 
+        .config("spark.jars", POSTGRES_JAR) 
+        .config("spark.driver.extraClassPath", POSTGRES_JAR)
         .getOrCreate()
+    )
 
     transform_and_reconcile_groups(spark)

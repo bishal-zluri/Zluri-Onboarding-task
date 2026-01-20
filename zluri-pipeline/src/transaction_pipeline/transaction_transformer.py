@@ -23,7 +23,6 @@ def load_cache():
         try:
             with open(CACHE_FILE, 'rb') as f:
                 cache = pickle.load(f)
-                print(f"[CACHE] Loaded {len(cache)} cached exchange rates")
                 return cache
         except Exception as e:
             print(f"[CACHE] Error loading cache: {e}")
@@ -34,7 +33,6 @@ def save_cache(cache):
     try:
         with open(CACHE_FILE, 'wb') as f:
             pickle.dump(cache, f)
-        print(f"[CACHE] Saved {len(cache)} exchange rates to cache")
     except Exception as e:
         print(f"[CACHE] Error saving cache: {e}")
 
@@ -46,14 +44,12 @@ def fetch_exchange_rates_batch(currency_date_pairs):
     cache = load_cache()
     rate_map = {}
     api_calls_made = 0
-    cache_hits = 0
     
     API_KEY = os.getenv("API_KEY")
     
     for currency, date_str in currency_date_pairs:
         if currency == "USD":
-            cache_key = f"USD_{date_str}"
-            rate_map[cache_key] = 1.0
+            rate_map[f"USD_{date_str}"] = 1.0
             continue
             
         cache_key = f"{currency}_{date_str}"
@@ -61,15 +57,13 @@ def fetch_exchange_rates_batch(currency_date_pairs):
         # Check cache first
         if cache_key in cache:
             rate_map[cache_key] = cache[cache_key]
-            cache_hits += 1
-            # print(f"[CACHE HIT] {currency} on {date_str}: {cache[cache_key]:.6f}")
             continue
         
         # Not in cache, fetch from API
         try:
             url = f"https://api.exchangerate.host/historical?access_key={API_KEY}&date={date_str}"
             
-            print(f"[API CALL {api_calls_made + 1}] Fetching {currency} for {date_str}...")
+            print(f"[API CALL] Fetching {currency} for {date_str}...")
             response = requests.get(url, timeout=10)
             
             if response.status_code == 429:
@@ -79,18 +73,7 @@ def fetch_exchange_rates_batch(currency_date_pairs):
                 continue
             
             data = response.json()
-            if not data.get("success"):
-                error_info = data.get("error", {})
-                print(f"[WARN] API failed for {currency} on {date_str}: {error_info}")
-                rate_map[cache_key] = 1.0
-                cache[cache_key] = 1.0
-                continue
             quotes = data.get("quotes")
-            if not quotes:
-                print(f"[WARN] Missing quotes for {currency} on {date_str}")
-                rate_map[cache_key] = 1.0
-                cache[cache_key] = 1.0
-                continue
             key = f"USD{currency}"
             rate = quotes.get(key) if quotes else None
 
@@ -104,7 +87,6 @@ def fetch_exchange_rates_batch(currency_date_pairs):
             converted_rate = 1.0 / float(rate)
             rate_map[cache_key] = converted_rate
             cache[cache_key] = converted_rate
-            print(f"[SUCCESS] {currency} on {date_str}: {converted_rate:.6f}")
             
             api_calls_made += 1
             if api_calls_made < len(currency_date_pairs):
@@ -116,10 +98,6 @@ def fetch_exchange_rates_batch(currency_date_pairs):
             cache[cache_key] = 1.0
     
     save_cache(cache)
-    print(f"\n=== Exchange Rate Fetch Summary ===")
-    print(f"Cache Hits: {cache_hits}")
-    print(f"API Calls Made: {api_calls_made}")
-    print(f"Total Rates Fetched: {len(rate_map)}")
     return rate_map
 
 def transform_and_load_transactions(spark):
@@ -133,7 +111,6 @@ def transform_and_load_transactions(spark):
         return
 
     # --- FIX 1: HANDLE NULL AMOUNTS IMMEDIATELY ---
-    # Enforce logic: If original_amount is NULL, set to 0.
     df_trans = df_trans.withColumn(
         "original_amount", 
         coalesce(col("original_amount"), lit(0))
@@ -189,7 +166,6 @@ def transform_and_load_transactions(spark):
     lookup_rate_udf = udf(lookup_rate, DoubleType())
     
     # Apply rates and Calculate USD
-    # Note: Since original_amount is forced to 0 if null, 0 * rate = 0 USD.
     df_final_trans = df_with_date_str.withColumn(
         "exchange_rate", 
         lookup_rate_udf(col("currency_code"), col("api_date_str"))
@@ -202,9 +178,6 @@ def transform_and_load_transactions(spark):
     ).drop("api_date_str")
 
     # 4. Preparing Dimension DataFrames (Cards & Budgets)
-    # We extract distinct cards and budgets referenced in the transactions
-    # This ensures we satisfy the schema requirement of having Cards/Budgets tables.
-    
     # Cards Dimension
     df_cards_dim = df_cards.select(
         "card_id", "card_name", "card_last_four", "card_type", "card_status"
@@ -241,7 +214,6 @@ def transform_and_load_transactions(spark):
     )
 
     # 6. Load
-    # Pass the dimension tables (df_cards_dim, df_budgets_dim) to the loader
     load_transaction_pipeline(
         spark, 
         df_final_trans, 
@@ -252,16 +224,11 @@ def transform_and_load_transactions(spark):
     )
 
 if __name__ == "__main__":
-    print(f"--- Launching Transaction Pipeline ---")
+    print(f"--- Launching Transaction Pipeline (Local) ---")
     spark = SparkSession.builder \
         .appName("TransactionTransformer") \
-        .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262") \
-        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
-        .config("spark.hadoop.fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.AnonymousAWSCredentialsProvider") \
-        .config("spark.hadoop.fs.s3a.threads.keepalivetime", "60") \
-        .config("spark.hadoop.fs.s3a.connection.establish.timeout", "30000") \
-        .config("spark.hadoop.fs.s3a.connection.timeout", "30000") \
-        .config("spark.hadoop.fs.s3a.multipart.purge.age", "86400") \
+        .config("spark.driver.bindAddress", "127.0.0.1") \
+        .config("spark.driver.host", "127.0.0.1") \
         .config("spark.jars", POSTGRES_JAR) \
         .config("spark.driver.extraClassPath", POSTGRES_JAR) \
         .getOrCreate()
