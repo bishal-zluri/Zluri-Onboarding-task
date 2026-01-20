@@ -1,30 +1,100 @@
-S3 (admin_groups)
-        │
-        ▼
+S3 (sync-day2)
+└─ admin_groups
+      │
+      ▼
+read_s3_data()
+  ├─ scan JSON / CSV / Parquet
+  ├─ union multiple formats
+  └─ add source_path
+      │
+      ▼
 process_groups_data()
-  ├─ extract user_ids[]
-  ├─ normalize array
-  └─ clean group rows
-        │
-        ▼
+  ├─ explode "results" array (if present)
+  │
+  ├─ normalize user_ids
+  │     ├─ agent_ids
+  │     ├─ users.id
+  │     └─ members.id
+  │
+  ├─ ensure user_ids is array (default = [])
+  │
+  ├─ normalize parent_group_id
+  │     └─ default NULL if missing
+  │
+  └─ OUTPUT
+        → one row per group
+        → user_ids as array<long>
+        → hierarchical metadata preserved
+      │
+      ▼
 transform_and_reconcile_groups()
-        │
-        ├─ READ users table  ◄───────────────┐
-        │                                     │
-        ├─ explode group.user_ids             │
-        ├─ join user_id → users.status        │
-        │                                     │
-        ├─ GROUP STATUS LOGIC                 │
-        │     if ANY user.status == active    │
-        │        → group = ACTIVE             │
-        │     else                            │
-        │        → group = INACTIVE           │
-        │                                     │
-        ├─ FULL OUTER JOIN with DB groups
-        │     missing from S3 → INACTIVE
-        │
-        ▼
-groups_loader (UPSERT)
-  ├─ write to groups_stage
-  ├─ INSERT ... ON CONFLICT(group_id)
-  └─ groups table updated
+  │
+  ├─ STEP 1: Clean & Normalize
+  │     ├─ cast group_id, parent_group_id → long
+  │     ├─ cast timestamps
+  │     └─ filter NULL group_id
+  │
+  ├─ STEP 2: GroupMembers + Direct Status
+  │     │
+  │     ├─ read USERS table from DB
+  │     │     └─ user_id, status
+  │     │
+  │     ├─ explode user_ids → (group_id, member_id)
+  │     │
+  │     ├─ join with user status
+  │     │     └─ default inactive if missing
+  │     │
+  │     └─ calculate is_active_direct
+  │           └─ active if ANY member is active
+  │
+  ├─ STEP 2.5: Bottom-Up Hierarchy Propagation
+  │     │
+  │     ├─ initialize:
+  │     │     final_active_flag = is_active_direct
+  │     │
+  │     ├─ iterative loop
+  │     │     ├─ find active child groups
+  │     │     ├─ activate parents
+  │     │     ├─ update final_active_flag
+  │     │     └─ stop on convergence
+  │     │
+  │     └─ derive final status
+  │           ├─ active
+  │           └─ inactive
+  │
+  ├─ STEP 3: Reconcile with DB (FULL OUTER JOIN)
+  │     │
+  │     ├─ initial load
+  │     │     └─ take S3 groups as-is
+  │     │
+  │     └─ merge logic
+  │           ├─ coalesce S3 + DB fields
+  │           ├─ prioritize S3 parent_group_id
+  │           ├─ inactive if missing from S3
+  │           └─ preserve created_at
+  │
+  └─ OUTPUT DATAFRAMES
+        ├─ df_final_groups
+        └─ df_group_members
+      │
+      ▼
+write_to_db()
+  │
+  ├─ init_db()
+  │     ├─ groups
+  │     │     PK: group_id
+  │     └─ group_members
+  │           PK: (group_id, user_id)
+  │
+  ├─ GROUPS (UPSERT)
+  │     ├─ write groups_stage
+  │     ├─ INSERT … ON CONFLICT(group_id)
+  │     └─ DROP groups_stage
+  │
+  ├─ GROUP_MEMBERS (SYNC)
+  │     ├─ write group_members_stage
+  │     ├─ DELETE existing mappings
+  │     ├─ INSERT new mappings
+  │     └─ DROP group_members_stage
+  │
+  └─ PIPELINE COMPLETE

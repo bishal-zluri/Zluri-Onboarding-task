@@ -1,24 +1,86 @@
-S3 (agents + agent_details + roles)
-            │
-            ▼
+S3 (sync-day2)
+├─ agents
+├─ agent_details
+└─ roles
+      │
+      ▼
+read_s3_data()
+  ├─ scan JSON / CSV / Parquet
+  ├─ union multiple formats
+  └─ add source_path
+      │
+      ▼
 process_agents_data()
-  ├─ join agents + details
-  ├─ explode role_ids
-  ├─ join roles
-  └─ aggregate role_names, group_ids
-            │
-            ▼
+  ├─ JOIN agents + agent_details (LEFT)
+  │
+  ├─ SELECT user attributes
+  │     ├─ user_id
+  │     ├─ user_name
+  │     ├─ user_email
+  │     ├─ created_at
+  │     └─ updated_at
+  │
+  ├─ explode_outer(role_ids)
+  │     └─ preserves users with NO roles
+  │
+  ├─ JOIN roles (LEFT)
+  │     └─ role_name, role_desc
+  │
+  └─ OUTPUT
+        → one row per (user_id, role_id)
+        → NULL role rows allowed
+      │
+      ▼
 transform_and_reconcile_users()
-  ├─ read existing users from DB
-  ├─ FULL OUTER JOIN (new vs old)
-  ├─ status logic:
-  │     if user_id present today → ACTIVE
-  │     else                     → INACTIVE
-  ├─ enforce NOT NULL
-  └─ cache & validate
-            │
-            ▼
-users_loader (UPSERT)
-  ├─ write to users_stage
-  ├─ INSERT ... ON CONFLICT(user_id)
-  └─ users table updated
+  ├─ cache exploded data
+  │
+  ├─ DERIVE ROLES TABLE
+  │     └─ distinct(role_id, role_name, role_desc)
+  │
+  ├─ DERIVE USER_ROLES TABLE
+  │     └─ distinct(user_id, role_id, role_name)
+  │
+  ├─ AGGREGATE USERS
+  │     └─ groupBy(user_id, user_name, user_email, created_at, updated_at)
+  │
+  ├─ READ existing users from Postgres
+  │
+  ├─ RECONCILIATION (FULL OUTER JOIN)
+  │     ├─ new.user_id present  → ACTIVE
+  │     ├─ missing in new batch → INACTIVE
+  │     ├─ coalesce(new, old) for user fields
+  │     └─ preserve created_at from DB
+  │
+  ├─ FILTER
+  │     └─ user_id IS NOT NULL
+  │
+  └─ OUTPUT DATAFRAMES
+        ├─ df_users
+        ├─ df_roles
+        └─ df_user_roles
+      │
+      ▼
+load_user_pipeline()
+  │
+  ├─ init_db()
+  │     ├─ users        (PK: user_id)
+  │     ├─ roles        (PK: role_id)
+  │     └─ user_roles   (PK: user_id + role_id)
+  │
+  ├─ LOAD ROLES
+  │     ├─ write roles_stage
+  │     ├─ INSERT … ON CONFLICT(role_id)
+  │     └─ DROP roles_stage
+  │
+  ├─ LOAD USERS
+  │     ├─ write users_stage
+  │     ├─ INSERT … ON CONFLICT(user_id)
+  │     └─ DROP users_stage
+  │
+  ├─ LOAD USER_ROLES (SYNC)
+  │     ├─ write user_roles_stage
+  │     ├─ DELETE existing user mappings
+  │     ├─ INSERT new mappings
+  │     └─ DROP user_roles_stage
+  │
+  └─ PIPELINE COMPLETE

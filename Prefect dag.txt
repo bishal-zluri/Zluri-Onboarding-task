@@ -1,0 +1,48 @@
+┌─────────────────────────────┐
+│  main_pipeline_flow()       │
+└─────────────┬───────────────┘
+              │
+              ▼
+┌─────────────────────────────┐
+│ Initialize Spark Session    │
+│ get_spark_session()         │
+│ (cached, 1 hour TTL)        │
+└─────────────┬───────────────┘
+              │
+              ▼
+        ┌───────────────┐
+        │ Inject DAY    │
+        │ (sync-day2)   │
+        │ into readers  │
+        └───────┬───────┘
+                │
+                ▼
+        ┌───────────────────────────────────────────┐
+        │              PARALLEL ZONE                 │
+        │  (ConcurrentTaskRunner enabled)            │
+        └───────────────┬───────────────┬───────────┘
+                        │               │
+                        │               │
+                        ▼               ▼
+        ┌───────────────────────┐   ┌────────────────────────┐
+        │ Run User Pipeline     │   │ Run Transaction Pipeline│
+        │ run_user_pipeline()  │   │ run_transaction_pipeline│
+        │ retries=2, delay=60s │   │ retries=2, delay=60s    │
+        └───────────┬──────────┘   └────────────────────────┘
+                    │
+                    │ (HARD DEPENDENCY)
+                    ▼
+        ┌───────────────────────┐
+        │ Run Group Pipeline    │
+        │ run_group_pipeline() │
+        │ retries=2, delay=60s │
+        └───────────┬──────────┘
+                    │
+        ┌───────────┴────────────┐
+        │                        │
+        ▼                        ▼
+┌───────────────────────┐  ┌────────────────────────┐
+│ Post-Sync Users       │  │ Post-Sync Groups        │
+│ post_sync_user_()     │  │ post_sync_group_()      │
+│ wait_for: Users       │  │ wait_for: Groups        │
+└───────────────────────┘  └────────────────────────┘
