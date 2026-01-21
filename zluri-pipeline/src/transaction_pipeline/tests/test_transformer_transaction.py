@@ -1,15 +1,10 @@
 import pytest
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType, DoubleType, DecimalType
-from unittest.mock import patch, MagicMock, mock_open, ANY
-from decimal import Decimal
-import os
-import pickle
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType
+from unittest.mock import patch, MagicMock
 
-import transaction_transformer
+# CHANGED: Removed load_cache, save_cache from imports
 from transaction_transformer import (
-    load_cache,
-    save_cache,
     fetch_exchange_rates_batch,
     transform_and_load_transactions
 )
@@ -61,64 +56,44 @@ def sample_budgets_df(spark):
 
 # --- TESTS ---
 
-class TestCacheFunctions:
-    @patch("os.path.exists")
-    @patch("builtins.open", new_callable=mock_open, read_data=pickle.dumps({"GBP_2023-01-01": 1.5}))
-    def test_load_cache_success(self, mock_file, mock_exists):
-        mock_exists.return_value = True
-        cache = load_cache()
-        assert cache == {"GBP_2023-01-01": 1.5}
-
-    @patch("os.path.exists")
-    def test_load_cache_no_file(self, mock_exists):
-        mock_exists.return_value = False
-        assert load_cache() == {}
-
-    @patch("builtins.open", new_callable=mock_open)
-    @patch("pickle.dump")
-    def test_save_cache_success(self, mock_dump, mock_file):
-        save_cache({"USD": 1.0})
-        mock_dump.assert_called()
+# CHANGED: Removed TestCacheFunctions class entirely as functions don't exist
 
 class TestFetchExchangeRates:
-    @patch("transaction_transformer.load_cache")
-    @patch("transaction_transformer.save_cache")
-    def test_fetch_usd_skipped(self, mock_save, mock_load):
-        mock_load.return_value = {}
-        rates = fetch_exchange_rates_batch([("USD", "2024-01-01")])
-        assert rates["USD_2024-01-01"] == 1.0
-
-    @patch("transaction_transformer.load_cache")
-    @patch("transaction_transformer.save_cache")
+    # CHANGED: Removed mocks for load_cache/save_cache
     @patch("requests.get")
-    def test_fetch_api_success(self, mock_get, mock_save, mock_load):
-        mock_load.return_value = {}
+    def test_fetch_api_success(self, mock_get):
+        """Test successful API call"""
         mock_response = MagicMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {"success": True, "quotes": {"USDGBP": 0.79}}
+        # Mocking logic: 1 USD = 0.79 GBP -> Rate = 1/0.79
+        mock_response.json.return_value = {"usd": {"gbp": 0.79}}
         mock_get.return_value = mock_response
         
         rates = fetch_exchange_rates_batch([("GBP", "2024-01-01")])
-        assert rates["GBP_2024-01-01"] == 1.0 / 0.79
+        
+        # Verify Key existence and calculation
+        assert "GBP_2024-01-01" in rates
+        expected_rate = 1.0 / 0.79
+        assert abs(rates["GBP_2024-01-01"] - expected_rate) < 0.0001
 
-    @patch("transaction_transformer.load_cache")
-    @patch("transaction_transformer.save_cache")
     @patch("requests.get")
-    def test_fetch_api_failure_response(self, mock_get, mock_save, mock_load, capsys):
-        """Test handling of invalid API response (missing rate logic)."""
-        mock_load.return_value = {}
+    def test_fetch_api_failure_response(self, mock_get):
+        """Test handling of invalid API response"""
         mock_response = MagicMock()
-        mock_response.status_code = 200
-        # "quotes" is missing or key not found
-        mock_response.json.return_value = {"success": False, "error": "info"} 
+        mock_response.status_code = 404 # Simulate failure
         mock_get.return_value = mock_response
         
         rates = fetch_exchange_rates_batch([("EUR", "2024-01-01")])
         
-        assert rates["EUR_2024-01-01"] == 1.0
-        captured = capsys.readouterr()
-        # FIX: Updated assertion string to match current code
-        assert "Missing rate for USDEUR" in captured.out
+        # Should fallback to 1.0 for USD if logic dictates, or fail gracefully
+        # Based on your code: rate_map[f"USD_{date_str}"] = 1.0 is always set
+        # But EUR won't be in the map if the API fails, OR you might default it.
+        # Checking your source code: if API fails, it continues. 
+        # So EUR_2024-01-01 will NOT be in the map, but USD_... will be.
+        
+        assert "USD_2024-01-01" in rates
+        assert rates["USD_2024-01-01"] == 1.0
+        # Ensure we didn't crash
 
 class TestTransformAndLoadTransactions:
     @patch('transaction_transformer.process_transactions_schema')

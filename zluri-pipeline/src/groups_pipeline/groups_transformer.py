@@ -18,10 +18,15 @@ def transform_and_reconcile_groups(spark):
     # --- VALIDATION & CLEANING STEP ---
     # 1. Cast IDs to Long (Non-numeric IDs become null)
     # 2. Use try_cast for timestamps to prevent crashes on malformed dates
+    # 3. Filter out self-referencing groups (id == parent_group_id)
     
     df_groups_clean = df_raw_groups.withColumn("valid_group_id", col("id").cast(LongType())) \
         .filter(col("valid_group_id").isNotNull()) \
         .filter(col("name").isNotNull() & (col("name") != "")) \
+        .filter(
+            # Filter out self-loops: group cannot be its own parent
+            (col("id") != col("parent_group_id")) | col("parent_group_id").isNull()
+        ) \
         .select(
             col("valid_group_id").alias("group_id"),
             col("name").alias("group_name"),
@@ -38,7 +43,7 @@ def transform_and_reconcile_groups(spark):
     dropped_count = original_count - clean_count
     
     if dropped_count > 0:
-        print(f"⚠️ Dropped {dropped_count} invalid groups (null/alphanumeric IDs or missing names).")
+        print(f"⚠️ Dropped {dropped_count} invalid groups (null/alphanumeric IDs, missing names, or self-loops).")
     
     print(f"[INGEST] Valid Groups: {clean_count}")
 

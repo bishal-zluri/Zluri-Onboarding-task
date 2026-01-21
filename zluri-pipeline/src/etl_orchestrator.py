@@ -89,7 +89,7 @@ def main_pipeline_flow():
     spark = get_spark_session()
     
     try:
-        day = "sync-day1"
+        day = "sync-day2"
         logger.info(f"=== PROCESSING: {day} ===")
 
         # Inject global config

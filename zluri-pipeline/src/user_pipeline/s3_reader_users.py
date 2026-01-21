@@ -71,12 +71,15 @@ def process_agents_data(spark):
         print("Required Agent Index missing.")
         return None
     
-    # Handle case where df_det might be None (completely missing folder)
-    if df_det is None:
+    # Check if we actually have details
+    has_details = df_det is not None
+    
+    if not has_details:
         print("⚠️ Agent Details missing. Using Agent Index data only.")
-        # Create empty dummy DF for join to allow fallback logic to work
-        df_det = df_idx.limit(0).alias("det") 
-
+        # Create a true dummy for the join to syntactically work
+        # We select "id" so the join condition 'on="id"' works
+        df_det = df_idx.select("id").limit(0).alias("det") 
+    
     # Join Users + Details
     df_users = df_idx.alias("idx").join(df_det.alias("det"), on="id", how="left")
 
@@ -96,18 +99,31 @@ def process_agents_data(spark):
     fallback_created = col("idx.created_at") if "created_at" in idx_cols else lit(None)
     fallback_updated = col("idx.updated_at") if "updated_at" in idx_cols else lit(None)
 
+    # --- SAFE SELECTION ---
+    # Only try to access 'det.contact.name' if we know df_det was loaded.
+    # Otherwise use lit(None).
+    
+    det_name = col("det.contact.name") if has_details else lit(None)
+    det_email = col("det.contact.email") if has_details else lit(None)
+    det_created = col("det.created_at") if has_details else lit(None)
+    det_updated = col("det.updated_at") if has_details else lit(None)
+    det_group_ids = col("det.group_ids") if has_details else lit(None)
+    
+    # FIX: Cast to array<string> so explode_outer doesn't crash on NULL
+    det_role_ids = col("det.role_ids") if has_details else lit(None).cast("array<string>")
+
     # --- SELECTION WITH COALESCE ---
     # coalesce(A, B) returns A if not null, otherwise B.
     # This prioritizes Agent Details (A), then falls back to Agent Index (B).
     
     df_exploded = df_users.select(
         col("idx.id").alias("user_id"),
-        coalesce(col("det.contact.name"), fallback_name).alias("user_name"),
-        coalesce(col("det.contact.email"), fallback_email).alias("user_email"),
-        coalesce(col("det.created_at"), fallback_created).alias("created_at"),
-        coalesce(col("det.updated_at"), fallback_updated).alias("updated_at"),
-        col("det.group_ids").alias("raw_group_ids"), 
-        explode_outer(col("det.role_ids")).alias("role_id")
+        coalesce(det_name, fallback_name).alias("user_name"),
+        coalesce(det_email, fallback_email).alias("user_email"),
+        coalesce(det_created, fallback_created).alias("created_at"),
+        coalesce(det_updated, fallback_updated).alias("updated_at"),
+        det_group_ids.alias("raw_group_ids"), 
+        explode_outer(det_role_ids).alias("role_id")
     )
 
     # Join with Roles to get Role Names

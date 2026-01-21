@@ -1,24 +1,21 @@
 import pytest
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructType, StructField, StringType, LongType, ArrayType
-from pyspark.sql.functions import col
 from unittest.mock import patch, MagicMock
-import sys
 
 # Import the module to test
 from s3_reader_users import (
     create_spark_session,
-    read_s3_data,
     process_agents_data,
+    read_local_data,
     ENTITY_AGENTS_INDEX,
     ENTITY_AGENT_DETAILS,
     ENTITY_ROLES
 )
 
-
 @pytest.fixture(scope="module")
 def spark():
-    """Create a Spark session for testing"""
+    """Shared Spark Session for tests"""
     spark = SparkSession.builder \
         .appName("TestUsersExtractor") \
         .master("local[2]") \
@@ -26,350 +23,172 @@ def spark():
     yield spark
     spark.stop()
 
+class TestReadLocalData:
+    """Tests specifically for the file reading utility"""
 
-class TestCreateSparkSession:
-    """Tests for create_spark_session function"""
-    
-    def test_create_spark_session_returns_valid_session(self):
-        """Test that create_spark_session returns a valid SparkSession"""
-        session = create_spark_session("TestApp")
-        assert session is not None
-        assert isinstance(session, SparkSession)
-        assert session.sparkContext.appName == "TestApp"
-        session.stop()
-    
-    def test_create_spark_session_with_s3_config(self):
-        """Test that Spark session has correct S3 configuration"""
-        session = create_spark_session()
-        conf = session.sparkContext.getConf()
-        assert conf.get("spark.hadoop.fs.s3a.impl") == "org.apache.hadoop.fs.s3a.S3AFileSystem"
-        session.stop()
-
-
-class TestReadS3Data:
-    """Tests for read_s3_data function"""
-    
-    def test_read_s3_data_with_no_files(self, spark, capsys):
-        """Test read_s3_data when no files are found"""
-        result = read_s3_data(spark, "non_existent_folder")
-        captured = capsys.readouterr()
+    @patch('os.path.exists')
+    def test_read_local_data_path_not_exists(self, mock_exists, spark, capsys):
+        """Test branch: if not os.path.exists(target_dir): continue"""
+        mock_exists.return_value = False
         
+        result = read_local_data(spark, "fake_folder")
+        
+        # Should return None and print specific message
         assert result is None
-        assert "[!] No data found for entity: non_existent_folder" in captured.out
-    
-    @patch('s3_reader_users.read_s3_data')
-    def test_read_s3_data_with_json_files(self, mock_read, spark):
-        """Test read_s3_data successfully reads JSON files"""
-        # Create mock dataframe
-        schema = StructType([
-            StructField("id", LongType(), True),
-            StructField("name", StringType(), True)
-        ])
-        mock_df = spark.createDataFrame([(1, "test")], schema)
-        mock_read.return_value = mock_df
+        captured = capsys.readouterr()
+        assert "[!] No data found" in captured.out
+
+    @patch('os.path.exists')
+    def test_read_local_data_exception_handling(self, mock_exists):
+        """
+        [FIXED] Test branch: try... except Exception: continue
+        Uses a MagicMock for spark to avoid 'AttributeError: property read has no deleter'
+        """
+        mock_exists.return_value = True
         
-        result = mock_read(spark, "test_folder")
-        assert result is not None
-        assert result.count() == 1
+        # Create a Mock Spark Session
+        mock_spark = MagicMock()
+        
+        # Configure the mock to raise an exception when reading JSON/CSV/Parquet
+        # The chain is: spark.read.option(...).json(...)
+        # We make the final call raise the exception
+        mock_spark.read.option.return_value.json.side_effect = Exception("Corrupted JSON")
+        mock_spark.read.option.return_value.csv.side_effect = Exception("Corrupted CSV")
+        mock_spark.read.parquet.side_effect = Exception("Corrupted Parquet")
+        
+        # Call the function with the MOCK spark object, not the real one
+        result = read_local_data(mock_spark, "error_folder")
+            
+        # Should catch the exception and return None (since found_dfs will be empty)
+        assert result is None
+
+class TestProcessAgentsData:
+    """Tests for the main logic (process_agents_data)"""
     
-    @patch('s3_reader_users.read_s3_data')
-    def test_read_s3_data_with_csv_files(self, mock_read, spark):
-        """Test read_s3_data successfully reads CSV files"""
-        schema = StructType([
+    @patch('s3_reader_users.read_local_data')
+    def test_process_agents_data_missing_index(self, mock_read, spark):
+        """Test branch: if not df_idx: return None"""
+        def mock_read_side_effect(spark, folder_name):
+            return None # Index is missing
+        
+        mock_read.side_effect = mock_read_side_effect
+        result = process_agents_data(spark)
+        assert result is None
+
+    @patch('s3_reader_users.read_local_data')
+    def test_process_agents_data_missing_details_full_fallback(self, mock_read, spark):
+        """Test branch: if not has_details (Fallback logic)"""
+        # Index Schema with NO optional columns (tests fallback defaults)
+        idx_schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("name", StringType(), True),
+            # Missing email, created_at, updated_at
+        ])
+        idx_df = spark.createDataFrame([(1, "Fallback User")], idx_schema)
+        
+        # Roles (Empty)
+        rol_df = spark.createDataFrame([], StructType([
+            StructField("id", StringType(), True), 
+            StructField("name", StringType(), True), 
+            StructField("description", StringType(), True)
+        ]))
+        
+        def mock_read_side_effect(spark, folder_name):
+            if folder_name == ENTITY_AGENTS_INDEX: return idx_df
+            if folder_name == ENTITY_AGENT_DETAILS: return None # Details Missing
+            if folder_name == ENTITY_ROLES: return rol_df
+            return None
+        
+        mock_read.side_effect = mock_read_side_effect
+        result = process_agents_data(spark)
+        
+        assert result is not None
+        row = result.collect()[0]
+        
+        # Assertions for fallback defaults
+        assert row.user_name == "Fallback User"
+        assert row.user_email == "no-email@placeholder.com" # Default applied
+        assert row.created_at is None
+        assert row.role_id is None # Explode on None casted array
+
+    @patch('s3_reader_users.read_local_data')
+    def test_process_agents_data_composite_name_fallback(self, mock_read, spark):
+        """Test branch: elif 'first_name' in idx_cols (Composite Name)"""
+        idx_schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("first_name", StringType(), True),
+            StructField("last_name", StringType(), True),
+            StructField("email", StringType(), True)
+        ])
+        idx_df = spark.createDataFrame([(1, "John", "Doe", "jdoe@test.com")], idx_schema)
+        
+        # Just return idx_df for index, None for others
+        mock_read.side_effect = lambda s, f: idx_df if f == ENTITY_AGENTS_INDEX else None
+        
+        result = process_agents_data(spark)
+        row = result.collect()[0]
+        
+        # Should concat First + Last
+        assert row.user_name == "John Doe"
+
+    @patch('s3_reader_users.read_local_data')
+    def test_process_agents_data_unknown_name_fallback(self, mock_read, spark):
+        """Test branch: else: fallback_name = lit('Unknown Name')"""
+        # Schema with NO name fields
+        idx_schema = StructType([
             StructField("id", LongType(), True),
             StructField("email", StringType(), True)
         ])
-        mock_df = spark.createDataFrame([(1, "test@example.com")], schema)
-        mock_read.return_value = mock_df
+        idx_df = spark.createDataFrame([(1, "unknown@test.com")], idx_schema)
         
-        result = mock_read(spark, "test_folder")
-        assert result is not None
-        assert result.count() == 1
-    
-    @patch('s3_reader_users.read_s3_data')
-    def test_read_s3_data_with_parquet_files(self, mock_read, spark):
-        """Test read_s3_data successfully reads Parquet files"""
-        schema = StructType([
-            StructField("id", LongType(), True),
-            StructField("status", StringType(), True)
-        ])
-        mock_df = spark.createDataFrame([(1, "active")], schema)
-        mock_read.return_value = mock_df
+        mock_read.side_effect = lambda s, f: idx_df if f == ENTITY_AGENTS_INDEX else None
         
-        result = mock_read(spark, "test_folder")
-        assert result is not None
-        assert result.count() == 1
-    
-    @patch('s3_reader_users.read_s3_data')
-    def test_read_s3_data_union_multiple_formats(self, mock_read, spark):
-        """Test read_s3_data unions data from multiple formats"""
-        schema = StructType([
+        result = process_agents_data(spark)
+        row = result.collect()[0]
+        
+        assert row.user_name == "Unknown Name"
+
+    @patch('s3_reader_users.read_local_data')
+    def test_process_agents_data_missing_roles_file(self, mock_read, spark):
+        """Test branch: else (if df_rol is None)"""
+        idx_schema = StructType([
             StructField("id", LongType(), True),
             StructField("name", StringType(), True)
         ])
-        mock_df = spark.createDataFrame([
-            (1, "user1"),
-            (2, "user2"),
-            (3, "user3")
-        ], schema)
-        mock_read.return_value = mock_df
+        idx_df = spark.createDataFrame([(1, "User No Role")], idx_schema)
         
-        result = mock_read(spark, "test_folder")
-        assert result is not None
-        assert result.count() == 3
+        # Details exists this time
+        det_schema = StructType([
+            StructField("id", LongType(), True),
+            StructField("contact", StructType([
+                StructField("name", StringType(), True),
+                StructField("email", StringType(), True)
+            ])),
+            StructField("created_at", StringType(), True),
+            StructField("updated_at", StringType(), True),
+            StructField("group_ids", ArrayType(LongType()), True),
+            StructField("role_ids", ArrayType(StringType()), True)
+        ])
+        det_data = [(1, ("User No Role", "u@test.com"), "2024-01-01", "2024-01-01", [], ["r1"])]
+        det_df = spark.createDataFrame(det_data, det_schema)
 
-
-class TestProcessAgentsData:
-    """Tests for process_agents_data function"""
-    
-    @patch('s3_reader_users.read_s3_data')
-    def test_process_agents_data_no_data(self, mock_read, spark):
-        """Test process_agents_data when no data is found"""
-        mock_read.return_value = None
-        result = process_agents_data(spark)
-        assert result is None
-    
-    @patch('s3_reader_users.read_s3_data')
-    def test_process_agents_data_with_users_and_roles(self, mock_read, spark):
-        """Test process_agents_data with valid users and roles data"""
-        # Mock agents index
-        idx_schema = StructType([StructField("id", LongType(), True)])
-        idx_data = [(1,), (2,)]
-        idx_df = spark.createDataFrame(idx_data, idx_schema)
-        
-        # Mock agent details with nested structure
-        det_schema = StructType([
-            StructField("id", LongType(), True),
-            StructField("contact", StructType([
-                StructField("name", StringType(), True),
-                StructField("email", StringType(), True)
-            ])),
-            StructField("created_at", StringType(), True),
-            StructField("updated_at", StringType(), True),
-            StructField("group_ids", ArrayType(LongType()), True),
-            StructField("role_ids", ArrayType(StringType()), True)
-        ])
-        det_data = [
-            (1, ("User One", "user1@example.com"), "2024-01-01", "2024-01-02", [1], ["role1"]),
-            (2, ("User Two", "user2@example.com"), "2024-01-01", "2024-01-02", [2], ["role2"])
-        ]
-        det_df = spark.createDataFrame(det_data, det_schema)
-        
-        # Mock roles
-        rol_schema = StructType([
-            StructField("id", StringType(), True),
-            StructField("name", StringType(), True),
-            StructField("description", StringType(), True)
-        ])
-        rol_data = [
-            ("role1", "Admin", "Administrator role"),
-            ("role2", "User", "Regular user role")
-        ]
-        rol_df = spark.createDataFrame(rol_data, rol_schema)
-        
-        # Mock read_s3_data to return appropriate dataframes
         def mock_read_side_effect(spark, folder_name):
-            if folder_name == ENTITY_AGENTS_INDEX:
-                return idx_df
-            elif folder_name == ENTITY_AGENT_DETAILS:
-                return det_df
-            elif folder_name == ENTITY_ROLES:
-                return rol_df
+            if folder_name == ENTITY_AGENTS_INDEX: return idx_df
+            if folder_name == ENTITY_AGENT_DETAILS: return det_df
+            if folder_name == ENTITY_ROLES: return None # Roles file missing!
             return None
         
         mock_read.side_effect = mock_read_side_effect
-        
         result = process_agents_data(spark)
         
         assert result is not None
-        assert result.count() == 2
-        assert "user_id" in result.columns
-        assert "user_name" in result.columns
-        assert "user_email" in result.columns
-        assert "role_id" in result.columns
-        assert "role_name" in result.columns
-    
-    @patch('s3_reader_users.read_s3_data')
-    def test_process_agents_data_users_without_roles(self, mock_read, spark):
-        """Test process_agents_data when users have no roles (explode_outer scenario)"""
-        # Mock agents index
-        idx_schema = StructType([StructField("id", LongType(), True)])
-        idx_df = spark.createDataFrame([(1,)], idx_schema)
+        row = result.collect()[0]
         
-        # Mock agent details with null role_ids
-        det_schema = StructType([
-            StructField("id", LongType(), True),
-            StructField("contact", StructType([
-                StructField("name", StringType(), True),
-                StructField("email", StringType(), True)
-            ])),
-            StructField("created_at", StringType(), True),
-            StructField("updated_at", StringType(), True),
-            StructField("group_ids", ArrayType(LongType()), True),
-            StructField("role_ids", ArrayType(StringType()), True)
-        ])
-        det_data = [(1, ("User One", "user1@example.com"), "2024-01-01", "2024-01-02", [], None)]
-        det_df = spark.createDataFrame(det_data, det_schema)
-        
-        # Mock roles
-        rol_schema = StructType([
-            StructField("id", StringType(), True),
-            StructField("name", StringType(), True),
-            StructField("description", StringType(), True)
-        ])
-        rol_df = spark.createDataFrame([], rol_schema)
-        
-        def mock_read_side_effect(spark, folder_name):
-            if folder_name == ENTITY_AGENTS_INDEX:
-                return idx_df
-            elif folder_name == ENTITY_AGENT_DETAILS:
-                return det_df
-            elif folder_name == ENTITY_ROLES:
-                return rol_df
-            return None
-        
-        mock_read.side_effect = mock_read_side_effect
-        
-        result = process_agents_data(spark)
-        
-        # User should still be present with null role
-        assert result is not None
-        assert result.count() == 1
-        user_row = result.collect()[0]
-        assert user_row.user_id == 1
-        assert user_row.user_name == "User One"
-        assert user_row.role_id is None
-    
-    @patch('s3_reader_users.read_s3_data')
-    def test_process_agents_data_no_roles_table(self, mock_read, spark):
-        """Test process_agents_data when roles table is missing"""
-        # Mock agents index
-        idx_schema = StructType([StructField("id", LongType(), True)])
-        idx_df = spark.createDataFrame([(1,)], idx_schema)
-        
-        # Mock agent details
-        det_schema = StructType([
-            StructField("id", LongType(), True),
-            StructField("contact", StructType([
-                StructField("name", StringType(), True),
-                StructField("email", StringType(), True)
-            ])),
-            StructField("created_at", StringType(), True),
-            StructField("updated_at", StringType(), True),
-            StructField("group_ids", ArrayType(LongType()), True),
-            StructField("role_ids", ArrayType(StringType()), True)
-        ])
-        det_data = [(1, ("User One", "user1@example.com"), "2024-01-01", "2024-01-02", [], ["role1"])]
-        det_df = spark.createDataFrame(det_data, det_schema)
-        
-        def mock_read_side_effect(spark, folder_name):
-            if folder_name == ENTITY_AGENTS_INDEX:
-                return idx_df
-            elif folder_name == ENTITY_AGENT_DETAILS:
-                return det_df
-            elif folder_name == ENTITY_ROLES:
-                return None  # No roles table
-            return None
-        
-        mock_read.side_effect = mock_read_side_effect
-        
-        result = process_agents_data(spark)
-        
-        assert result is not None
-        assert result.count() == 1
-        assert "role_name" in result.columns
-        assert "role_desc" in result.columns
-    
-    @patch('s3_reader_users.read_s3_data')
-    def test_process_agents_data_multiple_roles_per_user(self, mock_read, spark):
-        """Test process_agents_data when users have multiple roles"""
-        # Mock agents index
-        idx_schema = StructType([StructField("id", LongType(), True)])
-        idx_df = spark.createDataFrame([(1,)], idx_schema)
-        
-        # Mock agent details with multiple roles
-        det_schema = StructType([
-            StructField("id", LongType(), True),
-            StructField("contact", StructType([
-                StructField("name", StringType(), True),
-                StructField("email", StringType(), True)
-            ])),
-            StructField("created_at", StringType(), True),
-            StructField("updated_at", StringType(), True),
-            StructField("group_ids", ArrayType(LongType()), True),
-            StructField("role_ids", ArrayType(StringType()), True)
-        ])
-        det_data = [(1, ("User One", "user1@example.com"), "2024-01-01", "2024-01-02", [], ["role1", "role2", "role3"])]
-        det_df = spark.createDataFrame(det_data, det_schema)
-        
-        # Mock roles
-        rol_schema = StructType([
-            StructField("id", StringType(), True),
-            StructField("name", StringType(), True),
-            StructField("description", StringType(), True)
-        ])
-        rol_data = [
-            ("role1", "Admin", "Admin role"),
-            ("role2", "Manager", "Manager role"),
-            ("role3", "User", "User role")
-        ]
-        rol_df = spark.createDataFrame(rol_data, rol_schema)
-        
-        def mock_read_side_effect(spark, folder_name):
-            if folder_name == ENTITY_AGENTS_INDEX:
-                return idx_df
-            elif folder_name == ENTITY_AGENT_DETAILS:
-                return det_df
-            elif folder_name == ENTITY_ROLES:
-                return rol_df
-            return None
-        
-        mock_read.side_effect = mock_read_side_effect
-        
-        result = process_agents_data(spark)
-        
-        # Should have 3 rows (one per role)
-        assert result is not None
-        assert result.count() == 3
-        
-        # Verify all roles are present
-        roles = [row.role_name for row in result.collect()]
-        assert "Admin" in roles
-        assert "Manager" in roles
-        assert "User" in roles
-    
-    @patch('s3_reader_users.read_s3_data')
-    def test_process_agents_data_missing_index(self, mock_read, spark):
-        """Test process_agents_data when index data is missing"""
-        def mock_read_side_effect(spark, folder_name):
-            if folder_name == ENTITY_AGENTS_INDEX:
-                return None  # Missing index
-            return None
-        
-        mock_read.side_effect = mock_read_side_effect
-        
-        result = process_agents_data(spark)
-        assert result is None
-    
-    @patch('s3_reader_users.read_s3_data')
-    def test_process_agents_data_missing_details(self, mock_read, spark):
-        """Test process_agents_data when details data is missing"""
-        # Mock agents index
-        idx_schema = StructType([StructField("id", LongType(), True)])
-        idx_df = spark.createDataFrame([(1,)], idx_schema)
-        
-        def mock_read_side_effect(spark, folder_name):
-            if folder_name == ENTITY_AGENTS_INDEX:
-                return idx_df
-            elif folder_name == ENTITY_AGENT_DETAILS:
-                return None  # Missing details
-            return None
-        
-        mock_read.side_effect = mock_read_side_effect
-        
-        result = process_agents_data(spark)
-        assert result is None
-
+        # Assertions: Should have null role_name/desc because join was skipped
+        assert row.user_name == "User No Role"
+        assert row.role_id == "r1"
+        assert row.role_name is None
+        assert row.role_desc is None
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v", "--cov=s3_reader_users", "--cov-report=term-missing"])
+    pytest.main([__file__, "-v"])

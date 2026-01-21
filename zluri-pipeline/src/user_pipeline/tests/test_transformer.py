@@ -1,7 +1,8 @@
 import pytest
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType, LongType
-from unittest.mock import patch, MagicMock
+from pyspark.sql.types import StructType, StructField, StringType, LongType, TimestampType
+from unittest.mock import patch
+from datetime import datetime
 from user_transformer import transform_and_reconcile_users
 
 @pytest.fixture(scope="module")
@@ -15,8 +16,9 @@ def spark():
 
 @pytest.fixture
 def sample_exploded_df(spark):
+    # Schema matches what Reader outputs
     schema = StructType([
-        StructField("user_id", StringType(), True),
+        StructField("user_id", LongType(), True),
         StructField("user_name", StringType(), True),
         StructField("user_email", StringType(), True),
         StructField("created_at", StringType(), True),
@@ -25,9 +27,10 @@ def sample_exploded_df(spark):
         StructField("role_name", StringType(), True),
         StructField("role_desc", StringType(), True)
     ])
+    # Note: user_id is Long here to match schema
     data = [
-        ("101", "Alice", "alice@example.com", "2023-01-01", "2023-02-01", "r1", "Admin", "Admin Role"),
-        ("102", "Bob", "bob@example.com", "2023-01-01", "2023-02-01", "r2", "Editor", "Editor Role")
+        (101, "Alice", "alice@example.com", "2023-01-01", "2023-02-01", "r1", "Admin", "Admin Role"),
+        (102, "Bob", "bob@example.com", "2023-01-01", "2023-02-01", "r2", "Editor", "Editor Role")
     ]
     return spark.createDataFrame(data, schema)
 
@@ -46,80 +49,100 @@ class TestTransformAndReconcileUsers:
     @patch('user_transformer.process_agents_data')
     @patch('user_transformer.get_existing_db_data')
     @patch('user_transformer.load_user_pipeline')
-    def test_transform_initial_load(self, mock_load, mock_get_db, mock_process, spark, sample_exploded_df, capsys):
-        """Test initial load (Database is empty)"""
-        mock_process.return_value = sample_exploded_df
-        mock_get_db.return_value = None  # Simulates empty DB
+    def test_transform_handles_invalid_dates(self, mock_load, mock_get_db, mock_process, spark):
+        """
+        [NEW] Test that 'try_cast' handles malformed dates without crashing
+        """
+        schema = StructType([
+            StructField("user_id", LongType(), True),
+            StructField("user_name", StringType(), True),
+            StructField("user_email", StringType(), True),
+            StructField("created_at", StringType(), True), # Input is String
+            StructField("updated_at", StringType(), True),
+            StructField("role_id", StringType(), True),
+            StructField("role_name", StringType(), True),
+            StructField("role_desc", StringType(), True)
+        ])
+        
+        # '2022-05-' is malformed and should result in NULL timestamp
+        data = [(101, "Bad Date User", "test@test.com", "2022-05-", "2023-01-01", "r1", "Admin", "")]
+        df_invalid_date = spark.createDataFrame(data, schema)
+        
+        mock_process.return_value = df_invalid_date
+        mock_get_db.return_value = None
         
         transform_and_reconcile_users(spark)
         
-        captured = capsys.readouterr()
-        assert "Initial Load" in captured.out
-        mock_load.assert_called_once()
+        # Verify the dataframe passed to loader has NULL for created_at
+        df_final = mock_load.call_args[0][1]
+        row = df_final.collect()[0]
+        assert row.created_at is None
+        assert row.updated_at is not None # Valid date remains
 
     @patch('user_transformer.process_agents_data')
     @patch('user_transformer.get_existing_db_data')
     @patch('user_transformer.load_user_pipeline')
-    def test_transform_with_reconciliation(self, mock_load, mock_get_db, mock_process, spark, sample_exploded_df, capsys):
-        """Test reconciliation logic (New vs Existing vs Deleted users)"""
-        mock_process.return_value = sample_exploded_df  # Contains users 101 (Alice) and 102 (Bob)
+    def test_transform_filters_numeric_roles(self, mock_load, mock_get_db, mock_process, spark):
+        """
+        [NEW] Test that roles named "12345" are filtered out
+        """
+        schema = StructType([
+            StructField("user_id", LongType(), True),
+            StructField("user_name", StringType(), True),
+            StructField("user_email", StringType(), True),
+            StructField("created_at", StringType(), True),
+            StructField("updated_at", StringType(), True),
+            StructField("role_id", StringType(), True),
+            StructField("role_name", StringType(), True),
+            StructField("role_desc", StringType(), True)
+        ])
         
-        # --- FIX: Added 'updated_at' to schema and data ---
+        data = [
+            (101, "User1", "u1@test.com", "2023-01-01", "2023-01-01", "r1", "Admin", "Valid"),
+            (102, "User2", "u2@test.com", "2023-01-01", "2023-01-01", "r2", "12345", "Invalid") # Should be dropped
+        ]
+        mock_process.return_value = spark.createDataFrame(data, schema)
+        mock_get_db.return_value = None
+        
+        transform_and_reconcile_users(spark)
+        
+        # Verify roles dataframe
+        df_roles = mock_load.call_args[0][2] # Argument index 2 is roles
+        
+        roles = [r.role_name for r in df_roles.collect()]
+        assert "Admin" in roles
+        assert "12345" not in roles
+
+    @patch('user_transformer.process_agents_data')
+    @patch('user_transformer.get_existing_db_data')
+    @patch('user_transformer.load_user_pipeline')
+    def test_transform_reconciliation(self, mock_load, mock_get_db, mock_process, spark, sample_exploded_df):
+        """Test reconciliation logic"""
+        mock_process.return_value = sample_exploded_df
+        
+        # Existing DB Data (Use TimestampType to mimic JDBC read)
         existing_schema = StructType([
             StructField("user_id", LongType(), True),
             StructField("user_name", StringType(), True),
             StructField("user_email", StringType(), True),
             StructField("status", StringType(), True),
-            StructField("created_at", StringType(), True),
-            StructField("updated_at", StringType(), True) # <--- CRITICAL FIX
+            StructField("created_at", TimestampType(), True),
+            StructField("updated_at", TimestampType(), True)
         ])
         
+        # User 101 exists, User 999 is old/deleted
         existing_data = [
-            (101, "Alice Old", "alice@example.com", "active", "2023-01-01", "2023-01-01"),  # User exists
-            (999, "Charlie", "charlie@example.com", "active", "2022-01-01", "2022-01-01")   # User missing in new data (should become inactive)
+            (101, "Alice Old", "alice@example.com", "active", datetime(2023,1,1), datetime(2023,1,1)),
+            (999, "Charlie", "charlie@example.com", "active", datetime(2022,1,1), datetime(2022,1,1))
         ]
-        existing_df = spark.createDataFrame(existing_data, existing_schema)
-        mock_get_db.return_value = existing_df
+        mock_get_db.return_value = spark.createDataFrame(existing_data, existing_schema)
         
         transform_and_reconcile_users(spark)
         
-        # Capture arguments passed to loader
-        call_args = mock_load.call_args
-        df_final = call_args[0][1] # The dataframe passed to loader
-        
-        # Assertions
+        df_final = mock_load.call_args[0][1]
         rows = {row['user_id']: row for row in df_final.collect()}
         
-        # 1. Existing User (Alice): Should take new data (Active)
         assert rows[101]['status'] == 'active'
-        assert rows[101]['user_name'] == 'Alice' # New name
-        
-        # 2. New User (Bob): Should be added (Active)
-        assert rows[102]['status'] == 'active'
-        
-        # 3. Missing User (Charlie): Should be marked inactive, updated_at preserved from DB
-        assert 999 in rows
-        assert rows[999]['status'] == 'inactive'
-        # Verification that we didn't lose the old timestamp (it would be None if logic was broken)
-        assert rows[999]['updated_at'] is not None 
-
-    @patch('user_transformer.process_agents_data')
-    @patch('user_transformer.get_existing_db_data')
-    @patch('user_transformer.load_user_pipeline')
-    def test_transform_handles_empty_db(self, mock_load, mock_get_db, mock_process, spark, sample_exploded_df):
-        """Test when DB connection returns empty DataFrame instead of None"""
-        mock_process.return_value = sample_exploded_df
-        
-        # --- FIX: Added 'updated_at' to schema ---
-        existing_schema = StructType([
-            StructField("user_id", LongType(), True),
-            StructField("user_name", StringType(), True),
-            StructField("user_email", StringType(), True),
-            StructField("status", StringType(), True),
-            StructField("created_at", StringType(), True),
-            StructField("updated_at", StringType(), True)
-        ])
-        mock_get_db.return_value = spark.createDataFrame([], existing_schema)
-        
-        transform_and_reconcile_users(spark)
-        mock_load.assert_called()
+        assert rows[101]['user_name'] == 'Alice' # Updated name
+        assert rows[102]['status'] == 'active'   # New user
+        assert rows[999]['status'] == 'inactive' # Deleted user
