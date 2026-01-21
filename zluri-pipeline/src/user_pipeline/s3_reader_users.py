@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import input_file_name, col, explode_outer, lit
+from pyspark.sql.functions import input_file_name, col, explode_outer, lit, coalesce, concat_ws
 from functools import reduce
 import os
 
@@ -19,9 +19,9 @@ def create_spark_session(app_name="AgentDataExtractor"):
 
 # --- LOCAL READER UTILS ---
 def read_local_data(spark, folder_name):
-    # 1. Get current directory (src/user_pipeline)
+    # 1. Get current directory (e.g., .../src/user_pipeline)
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    # 2. Navigate up to root
+    # 2. Navigate up 3 levels to reach 'ONBOARDING TASK' root
     project_root = os.path.abspath(os.path.join(current_dir, "../../../"))
     # 3. Construct path
     target_dir = os.path.join(project_root, DAY_FOLDER, folder_name)
@@ -59,26 +59,58 @@ def read_local_data(spark, folder_name):
     return reduce(lambda df1, df2: df1.unionByName(df2, allowMissingColumns=True), found_dfs)
 
 def process_agents_data(spark):
+    """
+    Returns the joined dataframe. 
+    Implements FALLBACK logic: If agent_details is missing, use info from agents index.
+    """
     df_idx = read_local_data(spark, ENTITY_AGENTS_INDEX)
     df_det = read_local_data(spark, ENTITY_AGENT_DETAILS)
     df_rol = read_local_data(spark, ENTITY_ROLES)
 
-    if not df_idx or not df_det: 
-        print("Required Agent Index or Details missing.")
+    if not df_idx: 
+        print("Required Agent Index missing.")
         return None
+    
+    # Handle case where df_det might be None (completely missing folder)
+    if df_det is None:
+        print("⚠️ Agent Details missing. Using Agent Index data only.")
+        # Create empty dummy DF for join to allow fallback logic to work
+        df_det = df_idx.limit(0).alias("det") 
 
+    # Join Users + Details
     df_users = df_idx.alias("idx").join(df_det.alias("det"), on="id", how="left")
 
+    # --- FALLBACK COLUMN LOGIC ---
+    idx_cols = df_idx.columns
+    
+    # Name Fallback: Check 'name' or composite 'first_name + last_name' in index
+    if "name" in idx_cols:
+        fallback_name = col("idx.name")
+    elif "first_name" in idx_cols and "last_name" in idx_cols:
+        fallback_name = concat_ws(" ", col("idx.first_name"), col("idx.last_name"))
+    else:
+        fallback_name = lit("Unknown Name")
+
+    # Other Fallbacks
+    fallback_email = col("idx.email") if "email" in idx_cols else lit("no-email@placeholder.com")
+    fallback_created = col("idx.created_at") if "created_at" in idx_cols else lit(None)
+    fallback_updated = col("idx.updated_at") if "updated_at" in idx_cols else lit(None)
+
+    # --- SELECTION WITH COALESCE ---
+    # coalesce(A, B) returns A if not null, otherwise B.
+    # This prioritizes Agent Details (A), then falls back to Agent Index (B).
+    
     df_exploded = df_users.select(
         col("idx.id").alias("user_id"),
-        col("det.contact.name").alias("user_name"),
-        col("det.contact.email").alias("user_email"),
-        col("det.created_at").alias("created_at"),
-        col("det.updated_at").alias("updated_at"),
+        coalesce(col("det.contact.name"), fallback_name).alias("user_name"),
+        coalesce(col("det.contact.email"), fallback_email).alias("user_email"),
+        coalesce(col("det.created_at"), fallback_created).alias("created_at"),
+        coalesce(col("det.updated_at"), fallback_updated).alias("updated_at"),
         col("det.group_ids").alias("raw_group_ids"), 
         explode_outer(col("det.role_ids")).alias("role_id")
     )
 
+    # Join with Roles to get Role Names
     if df_rol:
         df_final = df_exploded.alias("u").join(df_rol.alias("r"), col("u.role_id") == col("r.id"), how="left") \
             .select(
@@ -98,5 +130,6 @@ if __name__ == "__main__":
         df = process_agents_data(spark)
         if df:
             df.show(truncate=False)
+            print(f"Total User Records (Exploded): {df.count()}")
     finally:
         spark.stop()

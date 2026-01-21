@@ -41,7 +41,7 @@ def init_db(spark):
     """
     print("\n--- [DB] Initializing Group Schemas ---")
 
-    # 1. GROUPS TABLE (Inline PK)
+    # 1. GROUPS TABLE
     execute_raw_sql(spark, f"""
     CREATE TABLE IF NOT EXISTS {TABLE_GROUPS} (
         group_id BIGINT PRIMARY KEY,
@@ -54,13 +54,13 @@ def init_db(spark):
     );
     """)
     
-    # Schema Evolution (Safe to keep for backward compatibility)
+    # Schema Evolution Check
     try:
         execute_raw_sql(spark, f"ALTER TABLE {TABLE_GROUPS} ADD COLUMN parent_group_id BIGINT")
     except Exception:
         pass
 
-    # 2. GROUP_MEMBERS TABLE (Composite PK at end)
+    # 2. GROUP_MEMBERS TABLE
     execute_raw_sql(spark, f"""
     CREATE TABLE IF NOT EXISTS {TABLE_GROUP_MEMBERS} (
         group_id BIGINT,
@@ -99,21 +99,29 @@ def write_to_db(df_groups, df_members, spark):
     # --- PART 1: GROUPS (UPSERT) ---
     print("\n--- Writing GROUPS (UPSERT) ---")
     
-    # No longer need to convert user_ids array to string since we are dropping it
+    # Drop user_ids as we normalize it into group_members
     df_write_groups = df_groups.drop("user_ids")
 
     try:
+        # Cast group_id safely again before write just in case
+        df_write_groups = df_write_groups.withColumn("group_id", col("group_id").cast("long"))
+        
         df_write_groups.write.jdbc(DB_URL, TEMP_GROUPS, "overwrite", DB_PROPERTIES)
 
-        # Upsert without user_ids
+        # Upsert Logic with Safe Date Casting
         upsert_sql = f"""
         INSERT INTO {TABLE_GROUPS} (
             group_id, group_name, description, 
             parent_group_id, status, created_at, updated_at
         )
         SELECT 
-            group_id, group_name, description, 
-            parent_group_id, status, created_at, updated_at
+            group_id, 
+            group_name, 
+            description, 
+            parent_group_id, 
+            status, 
+            created_at::timestamptz, 
+            updated_at::timestamptz
         FROM {TEMP_GROUPS}
         ON CONFLICT (group_id) 
         DO UPDATE SET 
@@ -121,7 +129,7 @@ def write_to_db(df_groups, df_members, spark):
             description = EXCLUDED.description,
             parent_group_id = EXCLUDED.parent_group_id,
             status      = EXCLUDED.status,
-            updated_at  = EXCLUDED.updated_at;
+            updated_at  = EXCLUDED.updated_at::timestamptz;
         """
         execute_raw_sql(spark, upsert_sql)
         print("✅ Groups Upserted.")
@@ -134,6 +142,9 @@ def write_to_db(df_groups, df_members, spark):
     if df_members and not df_members.isEmpty():
         print(f"\n--- Writing GROUP MEMBERS ({df_members.count()} rows) ---")
         try:
+            df_members = df_members.withColumn("group_id", col("group_id").cast("long")) \
+                                   .withColumn("user_id", col("user_id").cast("long"))
+            
             df_members.write.jdbc(DB_URL, TEMP_MEMBERS, "overwrite", DB_PROPERTIES)
 
             delete_sql = f"""

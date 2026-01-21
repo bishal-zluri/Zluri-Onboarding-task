@@ -1,5 +1,6 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, lit, when, coalesce, concat_ws, collect_set
+from pyspark.sql.functions import col, lit, when, coalesce, to_timestamp, expr
+from pyspark.sql.types import LongType
 from s3_reader_users import process_agents_data
 from user_postgres_loader import load_user_pipeline, get_existing_db_data, POSTGRES_JAR
 
@@ -11,18 +12,45 @@ def transform_and_reconcile_users(spark):
         print("⚠️ No new data found. Skipping.")
         return
 
-    df_exploded.cache()
+    # --- VALIDATION & CLEANING STEP ---
+    # 1. Cast user_id to Long. Invalid strings (e.g. "abc") become null automatically.
+    # 2. Filter out null user_ids.
+    # 3. Ensure mandatory fields (name, email) are present.
+    # 4. Use try_cast for timestamps to handle malformed dates like '2022-05-' safely (returns NULL instead of crashing).
+    
+    df_clean = df_exploded.withColumn("valid_user_id", col("user_id").cast(LongType())) \
+        .filter(col("valid_user_id").isNotNull()) \
+        .filter(col("user_name").isNotNull() & (col("user_name") != "")) \
+        .filter(col("user_email").isNotNull() & (col("user_email") != "")) \
+        .withColumn("user_id", col("valid_user_id")) \
+        .withColumn("created_at", expr("try_cast(created_at as timestamp)")) \
+        .withColumn("updated_at", expr("try_cast(updated_at as timestamp)")) \
+        .drop("valid_user_id")
+
+    # Logging dropped count
+    original_count = df_exploded.count()
+    clean_count = df_clean.count()
+    dropped_count = original_count - clean_count
+    
+    if dropped_count > 0:
+        print(f"⚠️ Dropped {dropped_count} invalid records (null/alphanumeric IDs or missing mandatory fields).")
+        print("   Only valid numeric user_ids with proper names/emails will be loaded.")
+
+    df_clean.cache()
 
     # --- PREPARE ROLES TABLE (Distinct List) ---
-    df_roles = df_exploded.select("role_id", "role_name", "role_desc").distinct() \
-        .filter(col("role_id").isNotNull())
+    # Validation: Exclude Role Names that are just numbers (e.g. "12334")
+    df_roles = df_clean.select("role_id", "role_name", "role_desc").distinct() \
+        .filter(col("role_id").isNotNull()) \
+        .filter(~col("role_name").rlike("^\d+$"))
 
     # --- PREPARE USER_ROLES TABLE (Link Table) ---
-    df_user_roles = df_exploded.select("user_id", "role_id", "role_name").distinct() \
-        .filter(col("user_id").isNotNull() & col("role_id").isNotNull())
+    df_user_roles = df_clean.select("user_id", "role_id", "role_name").distinct() \
+        .filter(col("user_id").isNotNull() & col("role_id").isNotNull()) \
+        .filter(~col("role_name").rlike("^\d+$"))
 
     # --- PREPARE USERS AGGREGATION (For Main Table) ---
-    df_users_agg = df_exploded.groupBy("user_id", "user_name", "user_email", "created_at", "updated_at") \
+    df_users_agg = df_clean.groupBy("user_id", "user_name", "user_email", "created_at", "updated_at") \
         .count().drop("count") 
 
     # --- USER RECONCILIATION LOGIC ---
@@ -62,7 +90,7 @@ def transform_and_reconcile_users(spark):
             coalesce(col("new.updated_at"), col("old.db_updated")).alias("updated_at") 
         )
         
-    # Filter out rows that are completely null (safety check)
+    # Final filter for safety
     df_final_users = df_final_users.filter(col("user_id").isNotNull())
 
     # Validation Print
@@ -80,7 +108,6 @@ if __name__ == "__main__":
     spark = (
         SparkSession.builder
         .appName("UserTransformer")
-        # FIXED: Forces Localhost binding to avoid VPN/Network IP issues
         .config("spark.driver.bindAddress", "127.0.0.1")
         .config("spark.driver.host", "127.0.0.1") 
         .config("spark.jars", POSTGRES_JAR) 

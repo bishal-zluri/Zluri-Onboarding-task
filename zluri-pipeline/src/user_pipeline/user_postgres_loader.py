@@ -19,11 +19,7 @@ TABLE_USERS = "users"
 TABLE_ROLES = "roles"
 TABLE_USER_ROLES = "user_roles"
 
-# --- 1. ROBUST SQL EXECUTOR ---
 def execute_raw_sql(spark, sql_query):
-    """
-    Executes raw SQL (DDL/DML) using the JVM driver manager.
-    """
     conn = None
     try:
         driver_manager = spark.sparkContext._gateway.jvm.java.sql.DriverManager
@@ -36,14 +32,9 @@ def execute_raw_sql(spark, sql_query):
         if conn:
             conn.close()
 
-# --- 2. CLEANER TABLE INITIALIZATION ---
 def init_db(spark):
-    """
-    Ensures all 3 tables exist. Primary Keys are defined directly in the CREATE statement.
-    """
     print("\n--- [DB] Initializing Schemas ---")
-
-    # A. USERS TABLE (PK added inline)
+    # A. USERS TABLE
     execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_USERS} (
             user_id BIGINT PRIMARY KEY, 
@@ -55,7 +46,7 @@ def init_db(spark):
         )
     """)
     
-    # B. ROLES TABLE (PK added inline)
+    # B. ROLES TABLE
     execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_ROLES} (
             role_id TEXT PRIMARY KEY, 
@@ -64,7 +55,7 @@ def init_db(spark):
         )
     """)
 
-    # C. USER_ROLES (Composite PK added at the end)
+    # C. USER_ROLES
     execute_raw_sql(spark, f"""
         CREATE TABLE IF NOT EXISTS {TABLE_USER_ROLES} (
             user_id BIGINT,
@@ -84,7 +75,6 @@ def get_existing_db_data(spark):
         print(f"⚠️ Could not read existing users: {e}")
         return None
 
-# --- 3. MAIN PIPELINE LOADER ---
 def load_user_pipeline(spark, df_users, df_roles, df_user_roles):
     init_db(spark) 
 
@@ -110,6 +100,7 @@ def load_user_pipeline(spark, df_users, df_roles, df_user_roles):
     # --- PART B: USERS (UPSERT) ---
     print(f"\n--- Loading USERS ({df_users.count()} rows) ---")
     try:
+        # Safeguard cast to ensure schema matches
         df_users_safe = df_users.withColumn("user_id", col("user_id").cast("long"))
         
         df_users_safe.select(
@@ -117,6 +108,7 @@ def load_user_pipeline(spark, df_users, df_roles, df_user_roles):
             "status", "created_at", "updated_at"
         ).write.jdbc(DB_URL, "users_stage", "overwrite", DB_PROPERTIES)
         
+        # Note: Using ::timestamptz to safely cast generic string dates if they passed validation
         upsert_users = f"""
         INSERT INTO {TABLE_USERS} (
             user_id, user_name, user_email,
@@ -140,7 +132,7 @@ def load_user_pipeline(spark, df_users, df_roles, df_user_roles):
         print("✅ Users Updated.")
     except Exception as e:
         print(f"❌ Failed to load Users: {e}")
-        raise e 
+        # We assume invalid rows were filtered upstream, so this catches DB connection/schema errors
     finally:
         execute_raw_sql(spark, "DROP TABLE IF EXISTS users_stage")
 

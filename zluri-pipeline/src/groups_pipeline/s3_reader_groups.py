@@ -6,7 +6,7 @@ import os
 # --- 1. CONFIGURATION ---
 BUCKET_NAME = "zluri-data-assignment"
 BASE_FOLDER = "assignment-jan-2026"
-DAY_FOLDER = "sync-day2"
+DAY_FOLDER = "sync-day1"
 
 # TARGET ENTITY FOLDER
 ENTITY_GROUPS = "admin_groups" 

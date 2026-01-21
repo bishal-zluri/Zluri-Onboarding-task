@@ -1,5 +1,5 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import input_file_name, col, explode, array, lit, when, pow, coalesce, struct
+from pyspark.sql.functions import input_file_name, col, explode, array, lit, when, pow, coalesce, struct, expr
 from functools import reduce
 import os
 
@@ -14,17 +14,8 @@ ENTITY_BUDGETS = "budgets"
 
 # --- 2. READER UTILS ---
 def read_local_data(spark, folder_name):
-    """
-    Scans a specific entity folder in the local filesystem.
-    Navigates up from src/transaction_pipeline -> src -> zluri-pipeline -> ONBOARDING TASK
-    """
-    # 1. Get current directory (e.g., .../src/transaction_pipeline)
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    
-    # 2. Navigate up 3 levels to reach 'ONBOARDING TASK' root
     project_root = os.path.abspath(os.path.join(current_dir, "../../../"))
-    
-    # 3. Construct absolute path
     target_dir = os.path.join(project_root, DAY_FOLDER, folder_name)
     base_path = f"file://{target_dir}"
     
@@ -62,7 +53,6 @@ def read_local_data(spark, folder_name):
 # --- 3. DATA PROCESSING LOGIC ---
 
 def process_cards_data(spark):
-    """ Reads Cards Data for Joins """
     print(f"--- Loading Cards ---")
     df = read_local_data(spark, ENTITY_CARDS)
     if df is None: return None
@@ -79,7 +69,6 @@ def process_cards_data(spark):
     )
 
 def process_budgets_data(spark):
-    """ Reads Budgets Data for Joins """
     print(f"--- Loading Budgets ---")
     df = read_local_data(spark, ENTITY_BUDGETS)
     if df is None: return None
@@ -97,9 +86,6 @@ def process_budgets_data(spark):
     )
 
 def process_transactions_schema(spark):
-    """
-    Extracts Transaction data.
-    """
     print(f"--- Loading Transactions ---")
     df_trans_raw = read_local_data(spark, ENTITY_TRANSACTIONS)
     
@@ -111,7 +97,6 @@ def process_transactions_schema(spark):
     if "results" in df_trans_raw.columns:
         df_exploded = df_trans_raw.select(explode(col("results")).alias("t"))
     else:
-        # Use struct wrapping for consistency
         df_exploded = df_trans_raw.select(struct(col("*")).alias("t"))
     
     cols = df_exploded.select("t.*").columns
@@ -122,9 +107,14 @@ def process_transactions_schema(spark):
         else:
             return lit(None).alias(alias_name)
 
-    # Logic to handle minor units (cents) vs major units (dollars)
-    amount_col = (col("t.currencyData.originalCurrencyAmount").cast("double") * \
-                  pow(lit(10), -col("t.currencyData.exponent").cast("int"))).alias("original_amount")
+    # FIX: Use try_cast to handle "ABC" or invalid numbers safely
+    # If casting fails, it returns NULL, and the multiplication result becomes NULL.
+    # We also default exponent to 0 if missing.
+    
+    raw_amount = expr("try_cast(t.currencyData.originalCurrencyAmount as double)")
+    exponent = coalesce(col("t.currencyData.exponent").cast("int"), lit(0))
+    
+    amount_col = (raw_amount * pow(lit(10), -exponent)).alias("original_amount")
 
     df_final = df_exploded.select(
         col("t.id").alias("transaction_id"),
@@ -138,7 +128,6 @@ def process_transactions_schema(spark):
         get_col("budgetId", "budget_id")
     )
     
-    # Date Coalesce Logic
     if "transaction_date" in df_final.columns and "occurred_time" in df_final.columns:
         df_final = df_final.withColumn("transaction_date", coalesce(col("transaction_date"), col("occurred_time")))
         df_final = df_final.drop("occurred_time")
@@ -150,7 +139,6 @@ def process_transactions_schema(spark):
     print(f"  -> Extracted {df_final.count()} unique transactions.")
     return df_final
 
-# --- EXECUTION BLOCK ---
 if __name__ == "__main__":
     print("--- Running Transaction Reader Individually ---")
     spark = SparkSession.builder \
@@ -161,17 +149,9 @@ if __name__ == "__main__":
         .getOrCreate()
     
     try:
-        # Run main transaction logic
         df_trans = process_transactions_schema(spark)
         if df_trans:
             print("\nPreviewing Transactions:")
             df_trans.show(5, truncate=False)
-        
-        # Optional: Run Card/Budget logic to verify
-        df_cards = process_cards_data(spark)
-        if df_cards:
-            print("\nPreviewing Cards:")
-            df_cards.show(5, truncate=False)
-
     finally:
         spark.stop()
