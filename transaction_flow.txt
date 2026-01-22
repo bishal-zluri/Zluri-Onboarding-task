@@ -1,57 +1,81 @@
-S3 (sync-day1)
+LOCAL FILESYSTEM (sync-day1)
 ├─ transactions
 ├─ cards
 └─ budgets
       │
       ▼
-read_s3_data()
+read_local_data()
+  ├─ resolve project root dynamically
   ├─ scan JSON / CSV / Parquet
   ├─ union multiple formats
+  ├─ add source_path
   └─ return unified DataFrame
       │
       ▼
 process_transactions_schema()
-  ├─ explode "results" (if present)
-  │     └─ fallback: wrap row using struct(*)
   │
-  ├─ extract & normalize fields
-  │     ├─ transaction_id
-  │     ├─ transaction_type
-  │     ├─ transaction_date / occurred_time (coalesce)
-  │     ├─ merchant_name
-  │     ├─ card_id
-  │     └─ budget_id
+  ├─ explode "results" array (if present)
+  │     └─ fallback: wrap entire row using struct(*)
   │
-  ├─ currency normalization
-  │     ├─ minor units → major units
-  │     └─ original_amount = amount * 10^(-exponent)
+  ├─ dynamic column resolution
+  │     ├─ safely extract fields if present
+  │     └─ missing fields → NULL
   │
-  ├─ deduplicate
+  ├─ currency normalization (SAFE)
+  │     ├─ try_cast(originalCurrencyAmount → double)
+  │     ├─ default exponent → 0 if missing
+  │     └─ original_amount = amount × 10^(-exponent)
+  │
+  ├─ normalize timestamps
+  │     ├─ coalesce(transactionDate, occurredTime)
+  │     └─ single transaction_date column
+  │
+  ├─ deduplication
   │     └─ dropDuplicates(transaction_id)
   │
   └─ OUTPUT
         → one row per transaction
-        → currency in original denomination
+        → original_amount in source currency
       │
       ▼
 process_cards_data()
   ├─ explode "results" (if present)
   └─ select card metadata
-        → card_id, card_name, card_last_four, card_type, card_status
+        → card_id
+        → card_name
+        → card_last_four
+        → card_type
+        → card_status
       │
       ▼
 process_budgets_data()
   ├─ explode "results" (if present)
   └─ select budget metadata
-        → budget_id, budget_name, budget_description
+        → budget_id
+        → budget_name
+        → budget_description
       │
       ▼
 transform_and_load_transactions()
   │
   ├─ STEP 1: Ingest
-  │     ├─ df_trans
-  │     ├─ df_cards
-  │     └─ df_budgets
+  │     ├─ df_trans (fact candidate)
+  │     ├─ df_cards (raw)
+  │     └─ df_budgets (raw)
+  │
+  ├─ STEP 1.5: Validation & Filtering
+  │     │
+  │     ├─ transaction_id NOT NULL / empty
+  │     ├─ card_id NOT NULL / empty
+  │     ├─ budget_id NOT NULL / empty
+  │     ├─ original_amount
+  │     │     ├─ try_cast to double
+  │     │     └─ must be >= 0
+  │     ├─ currency_code
+  │     │     └─ must be in VALID_CURRENCIES
+  │     │
+  │     └─ OUTPUT
+  │           → df_valid_trans (trusted rows only)
   │
   ├─ STEP 2: Delta Detection (CDC)
   │     │
@@ -60,12 +84,12 @@ transform_and_load_transactions()
   │     │
   │     ├─ LEFT JOIN (new vs existing)
   │     │
-  │     ├─ filter logic
+  │     ├─ filter conditions
   │     │     ├─ new transaction_id
   │     │     └─ original_amount changed
   │     │
   │     └─ OUTPUT
-  │           → only new or updated transactions
+  │           → df_new_trans (only new or updated)
   │
   ├─ STEP 3: Currency Conversion (USD)
   │     │
@@ -73,10 +97,11 @@ transform_and_load_transactions()
   │     │
   │     ├─ collect unique (currency, date) pairs
   │     │
-  │     ├─ batch FX API fetch
-  │     │     ├─ disk cache (.pkl)
-  │     │     ├─ API rate limiting protection
-  │     │     └─ fallback rate = 1.0
+  │     ├─ batch FX API calls (date-wise)
+  │     │     ├─ CDN-based currency API
+  │     │     ├─ SSL verify disabled (local dev)
+  │     │     ├─ USD base enforced
+  │     │     └─ conversion_rate = 1 / rate
   │     │
   │     ├─ broadcast rate_map
   │     │
@@ -84,48 +109,72 @@ transform_and_load_transactions()
   │     │
   │     └─ calculate
   │           ├─ exchange_rate
-  │           └─ amount_usd = original_amount * exchange_rate
+  │           └─ amount_usd = original_amount × exchange_rate
   │
-  ├─ STEP 4: Build Join Tables
+  ├─ STEP 4: Prepare Dimensions
+  │     │
+  │     ├─ extract distinct card_ids from transactions
+  │     ├─ extract distinct budget_ids from transactions
+  │     │
+  │     ├─ filter cards dimension
+  │     │     └─ df_cards_dim
+  │     │
+  │     └─ filter budgets dimension
+  │           └─ df_budgets_dim
+  │
+  ├─ STEP 5: Junction Tables
   │     │
   │     ├─ TRANSACTION ↔ CARDS (INNER JOIN)
-  │     │     └─ transaction_cards
+  │     │     └─ df_trans_cards_join
   │     │
   │     └─ TRANSACTION ↔ BUDGETS (INNER JOIN)
-  │           └─ transaction_budgets
+  │           └─ df_trans_budgets_join
   │
   └─ OUTPUT DATAFRAMES
-        ├─ df_final_trans
-        ├─ df_trans_cards_join
-        └─ df_trans_budgets_join
+        ├─ df_final_trans        (FACT)
+        ├─ df_cards_dim          (DIMENSION)
+        ├─ df_budgets_dim        (DIMENSION)
+        ├─ df_trans_cards_join   (JUNCTION)
+        └─ df_trans_budgets_join (JUNCTION)
       │
       ▼
 load_transaction_pipeline()
   │
   ├─ init_db()
-  │     ├─ transactions
-  │     │     PK: transaction_id
-  │     ├─ transaction_cards
-  │     │     PK: (transaction_id, card_id)
-  │     └─ transaction_budgets
-  │           PK: (transaction_id, budget_id)
+  │     ├─ cards                 (PK: card_id)
+  │     ├─ budgets               (PK: budget_id)
+  │     ├─ transactions          (PK: transaction_id)
+  │     ├─ transaction_cards     (PK: transaction_id + card_id)
+  │     └─ transaction_budgets   (PK: transaction_id + budget_id)
   │
-  ├─ LOAD TRANSACTIONS (UPSERT)
+  ├─ LOAD DIMENSION: CARDS (UPSERT)
+  │     ├─ write cards_stage
+  │     ├─ INSERT … ON CONFLICT(card_id)
+  │     └─ update card_name / status
+  │
+  ├─ LOAD DIMENSION: BUDGETS (UPSERT)
+  │     ├─ write budgets_stage
+  │     ├─ INSERT … ON CONFLICT(budget_id)
+  │     └─ update budget_name / description
+  │
+  ├─ LOAD FACT: TRANSACTIONS (UPSERT)
   │     ├─ write trans_stage
   │     ├─ INSERT … ON CONFLICT(transaction_id)
-  │     └─ update amount, merchant, card, budget, date
+  │     └─ update amount, currency, merchant, card, budget, date
   │
-  ├─ LOAD TRANSACTION_CARDS (UPSERT)
+  ├─ LOAD JUNCTION: TRANSACTION_CARDS (UPSERT)
   │     ├─ write trans_cards_stage
   │     ├─ INSERT … ON CONFLICT(transaction_id, card_id)
-  │     └─ update card metadata
+  │     └─ update card_name
   │
-  ├─ LOAD TRANSACTION_BUDGETS (UPSERT)
+  ├─ LOAD JUNCTION: TRANSACTION_BUDGETS (UPSERT)
   │     ├─ write trans_budgets_stage
   │     ├─ INSERT … ON CONFLICT(transaction_id, budget_id)
-  │     └─ update budget metadata
+  │     └─ update budget_name
   │
   └─ CLEANUP
         ├─ drop trans_stage
+        ├─ drop cards_stage
+        ├─ drop budgets_stage
         ├─ drop trans_cards_stage
         └─ drop trans_budgets_stage

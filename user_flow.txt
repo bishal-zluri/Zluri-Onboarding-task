@@ -1,24 +1,40 @@
-S3 (sync-day2)
+LOCAL FILESYSTEM (sync-day1)
 ├─ agents
 ├─ agent_details
 └─ roles
       │
       ▼
-read_s3_data()
+read_local_data()
+  ├─ resolve project root dynamically
   ├─ scan JSON / CSV / Parquet
   ├─ union multiple formats
-  └─ add source_path
+  ├─ add source_path
+  └─ return unified DataFrame
       │
       ▼
 process_agents_data()
-  ├─ JOIN agents + agent_details (LEFT)
   │
-  ├─ SELECT user attributes
-  │     ├─ user_id
+  ├─ read agents (REQUIRED)
+  ├─ read agent_details (OPTIONAL)
+  │     └─ fallback to agents if missing
+  ├─ read roles (OPTIONAL)
+  │
+  ├─ JOIN agents + agent_details (LEFT)
+  │     └─ dummy empty details table if missing
+  │
+  ├─ FALLBACK LOGIC (Agent Details → Agent Index)
   │     ├─ user_name
+  │     │     ├─ det.contact.name
+  │     │     ├─ idx.name
+  │     │     └─ idx.first_name + idx.last_name
+  │     │
   │     ├─ user_email
-  │     ├─ created_at
-  │     └─ updated_at
+  │     │     ├─ det.contact.email
+  │     │     └─ idx.email
+  │     │
+  │     ├─ created_at / updated_at
+  │     │     ├─ det timestamps
+  │     │     └─ idx timestamps
   │
   ├─ explode_outer(role_ids)
   │     └─ preserves users with NO roles
@@ -32,13 +48,30 @@ process_agents_data()
       │
       ▼
 transform_and_reconcile_users()
-  ├─ cache exploded data
+  │
+  ├─ STEP 1: Validation & Cleaning
+  │     │
+  │     ├─ cast user_id → Long
+  │     │     └─ drop non-numeric IDs
+  │     ├─ drop missing / empty user_name
+  │     ├─ drop missing / empty user_email
+  │     ├─ try_cast created_at, updated_at
+  │     │     └─ malformed dates → NULL (no crash)
+  │     │
+  │     └─ OUTPUT
+  │           → df_clean (trusted records only)
+  │
+  ├─ cache cleaned exploded data
   │
   ├─ DERIVE ROLES TABLE
-  │     └─ distinct(role_id, role_name, role_desc)
+  │     ├─ distinct(role_id, role_name, role_desc)
+  │     ├─ exclude NULL role_id
+  │     └─ exclude numeric-only role_name
   │
   ├─ DERIVE USER_ROLES TABLE
-  │     └─ distinct(user_id, role_id, role_name)
+  │     ├─ distinct(user_id, role_id, role_name)
+  │     ├─ exclude NULL user_id / role_id
+  │     └─ exclude numeric-only role_name
   │
   ├─ AGGREGATE USERS
   │     └─ groupBy(user_id, user_name, user_email, created_at, updated_at)
@@ -46,16 +79,18 @@ transform_and_reconcile_users()
   ├─ READ existing users from Postgres
   │
   ├─ RECONCILIATION (FULL OUTER JOIN)
+  │     │
   │     ├─ new.user_id present  → ACTIVE
   │     ├─ missing in new batch → INACTIVE
-  │     ├─ coalesce(new, old) for user fields
-  │     └─ preserve created_at from DB
+  │     ├─ coalesce(new, old) for name/email
+  │     ├─ preserve created_at from DB if missing
+  │     └─ preserve updated_at from DB if missing
   │
-  ├─ FILTER
+  ├─ FINAL SAFETY FILTER
   │     └─ user_id IS NOT NULL
   │
   └─ OUTPUT DATAFRAMES
-        ├─ df_users
+        ├─ df_final_users
         ├─ df_roles
         └─ df_user_roles
       │
@@ -67,12 +102,12 @@ load_user_pipeline()
   │     ├─ roles        (PK: role_id)
   │     └─ user_roles   (PK: user_id + role_id)
   │
-  ├─ LOAD ROLES
+  ├─ LOAD ROLES (UPSERT)
   │     ├─ write roles_stage
   │     ├─ INSERT … ON CONFLICT(role_id)
   │     └─ DROP roles_stage
   │
-  ├─ LOAD USERS
+  ├─ LOAD USERS (UPSERT)
   │     ├─ write users_stage
   │     ├─ INSERT … ON CONFLICT(user_id)
   │     └─ DROP users_stage

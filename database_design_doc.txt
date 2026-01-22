@@ -1,15 +1,15 @@
-Reasons to choose Postgres over MongoDb:
+Pros/Cons to choose Postgres:
 
-1. Efficient Relational joins:
-To find status of a group, we need to find status of each and every user and for that, 
-we can use relational joins by postgres to efficiently find user status using joins in postgres.
+Pros:
+1. In UserRoles join table, the user_id - role_id mapping is a primary key, so if a role_id gets deleted from Roles table,
+then beacuse of ON DELETE CASCADE, the mapping of user_id - role_id gets deleted easily and for this Postgres is better.
 
-2. Schema enforcement for the record:
-The objective of the pipeline is to produce a reconciled, high-quality dataset with a 
-consistent structure (group_id, status, user_ids, timestamps). PostgreSQL enforces strict 
-data typing and schema definitions. This ensures that the final data serving layer remains clean 
-and predictable, preventing malformed data (which might easily slip into a schema-less document store) from entering the system.
+Now other scenerio, would have been to store the roles_id as array[] but for that if any role_id gets deleted 
+from Roles table, then we would have to traverse through the user tables and delete each role_id that is deleted from 
+roles table.
 
-3. Easy access to data:
-Can use DB query to access the data easily.
+2. This is applicable for all other join present in the schema
 
+Cons:
+In MongoDb, if we store the role_ids as array[], then accessing them becomes easier and we can delete them as well if 
+any role_id gets deleted from Roles table
